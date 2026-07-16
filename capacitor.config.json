@@ -1,0 +1,11 @@
+{
+  "appId": "com.privatechat.app",
+  "appName": "Privát Chat",
+  "webDir": "client/dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "ios": {
+    "contentInset": "always"
+  }
+}

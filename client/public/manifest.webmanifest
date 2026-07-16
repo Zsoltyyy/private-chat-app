@@ -1,0 +1,18 @@
+{
+  "name": "Privát Chat",
+  "short_name": "Privát Chat",
+  "description": "Privát, titkosított chat baráti körnek.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#141518",
+  "theme_color": "#202226",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

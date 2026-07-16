@@ -1,0 +1,22 @@
+{
+  "name": "private-chat-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Privat, buildelheto 1:1 chat alkalmazas React, Node.js, Socket.IO es SQLite alapon.",
+  "scripts": {
+    "install:all": "npm install --prefix server && npm install --prefix client",
+    "dev": "concurrently \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "build": "npm run build --prefix client",
+    "build:koyeb": "npm run install:all && npm run build",
+    "start": "npm run start --prefix server",
+    "mobile:sync": "npm run build && npx cap sync",
+    "ios:add": "npm run build && npx cap add ios",
+    "ios:open": "npx cap open ios"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.2",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/ios": "^8.4.2",
+    "concurrently": "^8.2.2"
+  }
+}
