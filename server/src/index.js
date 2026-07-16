@@ -3,6 +3,7 @@ import express from "express";
 import http from "http";
 import cors from "cors";
 import bcrypt from "bcrypt";
+import nodemailer from "nodemailer";
 import path from "path";
 import webpush from "web-push";
 import { fileURLToPath } from "url";
@@ -10,11 +11,17 @@ import { Server } from "socket.io";
 import {
   createUser,
   deletePushSubscription,
+  deleteUserById,
+  findUserByEmail,
   findUserByUsername,
   findUserById,
+  getAdminUsers,
   getAllUsersExcept,
   getConversation,
+  getLatestEmailVerificationCode,
   getPushSubscriptionsForUser,
+  markEmailVerificationCodeUsed,
+  saveEmailVerificationCode,
   saveMessage,
   savePushSubscription,
   updateUserProfile
@@ -26,6 +33,7 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 4000;
 const CLIENT_URL = process.env.CLIENT_URL || "";
 const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,24}$/;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 const clientDistPath = path.resolve(__dirname, "../../client/dist");
 
@@ -33,7 +41,7 @@ const app = express();
 const server = http.createServer(app);
 const corsOptions = {
   origin: CLIENT_URL || true,
-  methods: ["GET", "POST", "PATCH"]
+  methods: ["GET", "POST", "PATCH", "DELETE"]
 };
 
 if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
@@ -50,9 +58,21 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: "1.5mb" }));
 
 const onlineUsers = new Map();
+const mailTransport = process.env.SMTP_HOST
+  ? nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: process.env.SMTP_SECURE === "true",
+      auth: process.env.SMTP_USER && process.env.SMTP_PASS
+        ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+        : undefined
+    })
+  : null;
 
 function getOnlineUserIds() {
-  return Array.from(onlineUsers.keys()).map(Number);
+  return Array.from(onlineUsers.entries())
+    .filter(([, socketIds]) => socketIds.size > 0)
+    .map(([userId]) => Number(userId));
 }
 
 function emitOnlineUsers() {
@@ -65,6 +85,18 @@ function emitUsersChanged() {
 
 function normalizeUsername(username) {
   return String(username || "").trim();
+}
+
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function createVerificationCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function isAdmin(user) {
+  return user?.username === "ZsoltY";
 }
 
 function validateCredentials(username, password) {
@@ -87,9 +119,37 @@ function toSafeUser(user) {
   return {
     id: user.id,
     username: user.username,
+    email: user.email,
+    email_verified: user.email_verified,
     display_name: user.display_name,
     avatar_color: user.avatar_color
   };
+}
+
+async function sendEmail({ to, subject, text }) {
+  if (!to) return false;
+
+  if (!mailTransport) {
+    console.log(`[DEV EMAIL] To: ${to}\nSubject: ${subject}\n${text}`);
+    return false;
+  }
+
+  await mailTransport.sendMail({
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to,
+    subject,
+    text
+  });
+
+  return true;
+}
+
+async function sendVerificationEmail(email, code) {
+  await sendEmail({
+    to: email,
+    subject: "Privát Chat megerősítő kód",
+    text: `A Privát Chat megerősítő kódod: ${code}\n\nA kód 10 percig érvényes.`
+  });
 }
 
 async function sendPushToUser(userId, payload) {
@@ -129,27 +189,86 @@ app.post("/push/subscribe", authMiddleware, (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/auth/request-code", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body.email);
+
+    if (!EMAIL_PATTERN.test(email)) {
+      return res.status(400).json({ error: "Érvényes email cím szükséges." });
+    }
+
+    if (findUserByEmail(email)) {
+      return res.status(409).json({ error: "Ezzel az email címmel már van fiók." });
+    }
+
+    const code = createVerificationCode();
+    const codeHash = await bcrypt.hash(code, 10);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+    saveEmailVerificationCode(email, codeHash, expiresAt);
+    await sendVerificationEmail(email, code);
+
+    res.json({
+      ok: true,
+      message: mailTransport
+        ? "Elküldtük a megerősítő kódot emailben."
+        : "Email küldés még nincs beállítva, a kód a szerver logban látszik."
+    });
+  } catch (error) {
+    console.error("Verification code error:", error);
+    res.status(500).json({ error: "Nem sikerült elküldeni a megerősítő kódot." });
+  }
+});
+
 app.post("/auth/register", async (req, res) => {
   try {
     const username = normalizeUsername(req.body.username);
+    const email = normalizeEmail(req.body.email);
     const password = String(req.body.password || "");
+    const verificationCode = String(req.body.verificationCode || "").trim();
     const validationError = validateCredentials(username, password);
 
     if (validationError) {
       return res.status(400).json({ error: validationError });
     }
 
-    const existingUser = findUserByUsername(username);
+    if (!EMAIL_PATTERN.test(email)) {
+      return res.status(400).json({ error: "Érvényes email cím szükséges." });
+    }
 
-    if (existingUser) {
+    if (!verificationCode) {
+      return res.status(400).json({ error: "Megerősítő kód szükséges." });
+    }
+
+    if (findUserByUsername(username)) {
       return res.status(409).json({ error: "Ez a felhasználónév már foglalt." });
     }
 
+    if (findUserByEmail(email)) {
+      return res.status(409).json({ error: "Ezzel az email címmel már van fiók." });
+    }
+
+    const storedCode = getLatestEmailVerificationCode(email);
+
+    if (!storedCode || new Date(storedCode.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: "Lejárt vagy hiányzó megerősítő kód." });
+    }
+
+    const validCode = await bcrypt.compare(verificationCode, storedCode.code_hash);
+
+    if (!validCode) {
+      return res.status(400).json({ error: "Hibás megerősítő kód." });
+    }
+
     const passwordHash = await bcrypt.hash(password, 12);
-    const result = createUser(username, passwordHash);
+    const result = createUser(username, passwordHash, email);
+    markEmailVerificationCodeUsed(storedCode.id);
+
     const user = {
       id: result.lastInsertRowid,
       username,
+      email,
+      email_verified: 1,
       display_name: null,
       avatar_color: "#3466f6"
     };
@@ -166,16 +285,16 @@ app.post("/auth/login", async (req, res) => {
   try {
     const username = normalizeUsername(req.body.username);
     const password = String(req.body.password || "");
-    const user = findUserByUsername(username);
+    const user = findUserByUsername(username) || findUserByEmail(normalizeEmail(username));
 
     if (!user) {
-      return res.status(401).json({ error: "Hibás felhasználónév vagy jelszó." });
+      return res.status(401).json({ error: "Hibás felhasználónév/email vagy jelszó." });
     }
 
     const validPassword = await bcrypt.compare(password, user.password_hash);
 
     if (!validPassword) {
-      return res.status(401).json({ error: "Hibás felhasználónév vagy jelszó." });
+      return res.status(401).json({ error: "Hibás felhasználónév/email vagy jelszó." });
     }
 
     const safeUser = toSafeUser(user);
@@ -234,6 +353,57 @@ app.get("/messages/:userId", authMiddleware, (req, res) => {
   res.json({ messages: getConversation(req.user.id, otherUserId) });
 });
 
+app.get("/admin/status", authMiddleware, (req, res) => {
+  if (!isAdmin(req.user)) {
+    return res.status(403).json({ error: "Nincs jogosultság." });
+  }
+
+  res.json({
+    users: getAdminUsers(),
+    onlineUserIds: getOnlineUserIds(),
+    onlineConnections: Array.from(onlineUsers.entries()).map(([userId, socketIds]) => ({
+      userId: Number(userId),
+      sockets: socketIds.size
+    })),
+    uptimeSeconds: Math.round(process.uptime())
+  });
+});
+
+app.delete("/admin/users/:userId", authMiddleware, async (req, res) => {
+  if (!isAdmin(req.user)) {
+    return res.status(403).json({ error: "Nincs jogosultság." });
+  }
+
+  const userId = Number(req.params.userId);
+
+  if (!userId) {
+    return res.status(400).json({ error: "Érvénytelen felhasználó." });
+  }
+
+  if (userId === req.user.id) {
+    return res.status(400).json({ error: "Saját admin fiókot nem törölhetsz." });
+  }
+
+  const user = findUserById(userId);
+
+  if (!user) {
+    return res.status(404).json({ error: "Felhasználó nem található." });
+  }
+
+  deleteUserById(userId);
+  io.to(`user:${userId}`).emit("account:deleted");
+  emitUsersChanged();
+  emitOnlineUsers();
+
+  await sendEmail({
+    to: user.email,
+    subject: "Privát Chat fiók törölve",
+    text: `Szia ${user.display_name || user.username}!\n\nA Privát Chat fiókodat egy admin törölte.\n\nHa szerinted ez tévedés, keresd Zsoltot.`
+  });
+
+  res.json({ ok: true });
+});
+
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(clientDistPath));
   app.get("*", (req, res) => {
@@ -262,7 +432,9 @@ io.on("connection", (socket) => {
   const userId = socket.user.id;
 
   socket.join(`user:${userId}`);
-  onlineUsers.set(userId, socket.id);
+  const socketIds = onlineUsers.get(userId) || new Set();
+  socketIds.add(socket.id);
+  onlineUsers.set(userId, socketIds);
   emitOnlineUsers();
 
   socket.on("message:send", (payload, callback) => {
@@ -307,9 +479,13 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    const currentSocketId = onlineUsers.get(userId);
+    const socketIds = onlineUsers.get(userId);
 
-    if (currentSocketId === socket.id) {
+    if (socketIds) {
+      socketIds.delete(socket.id);
+    }
+
+    if (!socketIds || socketIds.size === 0) {
       onlineUsers.delete(userId);
     }
 

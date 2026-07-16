@@ -9,6 +9,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,
+    email TEXT UNIQUE,
+    email_verified INTEGER NOT NULL DEFAULT 1,
     display_name TEXT,
     avatar_color TEXT NOT NULL DEFAULT '#3466f6',
     password_hash TEXT NOT NULL,
@@ -36,6 +38,15 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id)
   );
+
+  CREATE TABLE IF NOT EXISTS email_verification_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 const userColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
@@ -44,15 +55,29 @@ if (!userColumns.includes("display_name")) {
   db.prepare("ALTER TABLE users ADD COLUMN display_name TEXT").run();
 }
 
+if (!userColumns.includes("email")) {
+  db.prepare("ALTER TABLE users ADD COLUMN email TEXT").run();
+}
+
+if (!userColumns.includes("email_verified")) {
+  db.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1").run();
+}
+
 if (!userColumns.includes("avatar_color")) {
   db.prepare("ALTER TABLE users ADD COLUMN avatar_color TEXT NOT NULL DEFAULT '#3466f6'").run();
 }
 
-export function createUser(username, passwordHash) {
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
+  ON users(lower(email))
+  WHERE email IS NOT NULL;
+`);
+
+export function createUser(username, passwordHash, email = null) {
   return db.prepare(`
-    INSERT INTO users (username, password_hash)
-    VALUES (?, ?)
-  `).run(username, passwordHash);
+    INSERT INTO users (username, email, email_verified, password_hash)
+    VALUES (?, ?, ?, ?)
+  `).run(username, email, email ? 1 : 1, passwordHash);
 }
 
 export function findUserByUsername(username) {
@@ -62,9 +87,16 @@ export function findUserByUsername(username) {
   `).get(username);
 }
 
+export function findUserByEmail(email) {
+  return db.prepare(`
+    SELECT * FROM users
+    WHERE lower(email) = lower(?)
+  `).get(email);
+}
+
 export function findUserById(id) {
   return db.prepare(`
-    SELECT id, username, display_name, avatar_color, created_at
+    SELECT id, username, email, email_verified, display_name, avatar_color, created_at
     FROM users
     WHERE id = ?
   `).get(id);
@@ -77,6 +109,62 @@ export function getAllUsersExcept(userId) {
     WHERE id != ?
     ORDER BY coalesce(display_name, username) ASC
   `).all(userId);
+}
+
+export function getAdminUsers() {
+  return db.prepare(`
+    SELECT
+      u.id,
+      u.username,
+      u.email,
+      u.email_verified,
+      u.display_name,
+      u.avatar_color,
+      u.created_at,
+      (
+        SELECT count(*)
+        FROM messages m
+        WHERE m.sender_id = u.id OR m.receiver_id = u.id
+      ) AS message_count
+    FROM users u
+    ORDER BY u.created_at DESC, u.id DESC
+  `).all();
+}
+
+export function deleteUserById(userId) {
+  const transaction = db.transaction(() => {
+    db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?").run(userId);
+    db.prepare("DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?").run(userId, userId);
+    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  });
+
+  transaction();
+}
+
+export function saveEmailVerificationCode(email, codeHash, expiresAt) {
+  db.prepare(`
+    INSERT INTO email_verification_codes (email, code_hash, expires_at)
+    VALUES (?, ?, ?)
+  `).run(email, codeHash, expiresAt);
+}
+
+export function getLatestEmailVerificationCode(email) {
+  return db.prepare(`
+    SELECT *
+    FROM email_verification_codes
+    WHERE lower(email) = lower(?)
+      AND used_at IS NULL
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+  `).get(email);
+}
+
+export function markEmailVerificationCodeUsed(id) {
+  db.prepare(`
+    UPDATE email_verification_codes
+    SET used_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(id);
 }
 
 export function updateUserProfile(userId, profile) {

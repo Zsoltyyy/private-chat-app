@@ -57,9 +57,7 @@ async function imageFileToDataUrl(file) {
   const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
   canvas.width = Math.round(image.width * scale);
   canvas.height = Math.round(image.height * scale);
-
-  const context = canvas.getContext("2d");
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
   URL.revokeObjectURL(image.src);
 
   return canvas.toDataURL("image/jpeg", 0.74);
@@ -68,8 +66,9 @@ async function imageFileToDataUrl(file) {
 export default function App() {
   const [user, setUser] = useState(getStoredUser());
   const [mode, setMode] = useState("login");
-  const [authForm, setAuthForm] = useState({ username: "", password: "" });
+  const [authForm, setAuthForm] = useState({ username: "", email: "", password: "", verificationCode: "" });
   const [authError, setAuthError] = useState("");
+  const [codeStatus, setCodeStatus] = useState("");
   const [socket, setSocket] = useState(null);
   const [users, setUsers] = useState([]);
   const [onlineUserIds, setOnlineUserIds] = useState([]);
@@ -83,6 +82,7 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState("profile");
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [pushStatus, setPushStatus] = useState("");
+  const [adminStatus, setAdminStatus] = useState(null);
   const [profileForm, setProfileForm] = useState({
     displayName: user?.display_name || "",
     avatarColor: user?.avatar_color || AVATAR_COLORS[0]
@@ -90,6 +90,7 @@ export default function App() {
   const [chatError, setChatError] = useState("");
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const selectedUserRef = useRef(null);
 
   const selectedUserIsOnline = useMemo(() => {
     if (!selectedUser) return false;
@@ -97,10 +98,13 @@ export default function App() {
   }, [onlineUserIds, selectedUser]);
 
   useEffect(() => {
+    selectedUserRef.current = selectedUser;
+  }, [selectedUser]);
+
+  useEffect(() => {
     if (!user) return undefined;
 
     loadUsers();
-
     const activeSocket = connectSocket();
     setSocket(activeSocket);
 
@@ -116,14 +120,16 @@ export default function App() {
         avatarColor: updatedUser.avatar_color || AVATAR_COLORS[0]
       });
     });
+    activeSocket.on("account:deleted", handleLogout);
     activeSocket.on("message:new", (message) => {
       setMessages((current) => {
         const alreadyExists = current.some((item) => item.id === message.id);
         if (alreadyExists) return current;
 
+        const activeChat = selectedUserRef.current;
         const belongsToSelectedChat =
-          selectedUser &&
-          (message.sender_id === selectedUser.id || message.receiver_id === selectedUser.id);
+          activeChat &&
+          (message.sender_id === activeChat.id || message.receiver_id === activeChat.id);
 
         return belongsToSelectedChat ? [...current, message] : current;
       });
@@ -133,10 +139,11 @@ export default function App() {
       activeSocket.off("users:online");
       activeSocket.off("users:changed", loadUsers);
       activeSocket.off("profile:updated");
+      activeSocket.off("account:deleted", handleLogout);
       activeSocket.off("message:new");
       disconnectSocket();
     };
-  }, [user, selectedUser]);
+  }, [user]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -158,12 +165,7 @@ export default function App() {
               ? await decryptMessage(message.content, chatSecret, user.id, selectedUser.id)
               : "Titkosított üzenet. Add meg a beszélgetéskulcsot a Beállításokban.";
 
-            return {
-              ...message,
-              parsedContent: parseMessageContent(content),
-              decryptedContent: content,
-              decryptFailed: false
-            };
+            return { ...message, parsedContent: parseMessageContent(content), decryptedContent: content, decryptFailed: false };
           } catch {
             return {
               ...message,
@@ -211,6 +213,22 @@ export default function App() {
     }
   }
 
+  async function requestVerificationCode() {
+    setAuthError("");
+    setCodeStatus("");
+
+    try {
+      const data = await api("/auth/request-code", {
+        method: "POST",
+        body: JSON.stringify({ email: authForm.email })
+      });
+
+      setCodeStatus(data.message || "Kód elküldve.");
+    } catch (error) {
+      setAuthError(error.message);
+    }
+  }
+
   async function handleAuthSubmit(event) {
     event.preventDefault();
     setAuthError("");
@@ -225,7 +243,7 @@ export default function App() {
         displayName: data.user.display_name || "",
         avatarColor: data.user.avatar_color || AVATAR_COLORS[0]
       });
-      setAuthForm({ username: "", password: "" });
+      setAuthForm({ username: "", email: "", password: "", verificationCode: "" });
     } catch (error) {
       setAuthError(error.message);
     }
@@ -285,6 +303,27 @@ export default function App() {
     }
   }
 
+  async function loadAdminStatus() {
+    try {
+      const data = await api("/admin/status");
+      setAdminStatus(data);
+    } catch (error) {
+      setChatError(error.message);
+    }
+  }
+
+  async function deleteAdminUser(userId) {
+    if (!window.confirm("Biztosan törlöd ezt a felhasználót? Az üzenetei is törlődnek.")) return;
+
+    try {
+      await api(`/admin/users/${userId}`, { method: "DELETE" });
+      await loadAdminStatus();
+      await loadUsers();
+    } catch (error) {
+      setChatError(error.message);
+    }
+  }
+
   async function sendEncryptedContent(content) {
     if (!socket || !selectedUser) return;
 
@@ -307,9 +346,7 @@ export default function App() {
   async function sendMessage(event) {
     event.preventDefault();
     const text = messageText.trim();
-
     if (!text) return;
-
     await sendEncryptedContent(text);
     setMessageText("");
     setEmojiOpen(false);
@@ -349,9 +386,26 @@ export default function App() {
 
           <form onSubmit={handleAuthSubmit}>
             <label>
-              Felhasználónév
-              <input autoComplete="username" value={authForm.username} onChange={(event) => setAuthForm({ ...authForm, username: event.target.value })} placeholder="pl. zsolt" />
+              {mode === "login" ? "Felhasználónév vagy email" : "Felhasználónév"}
+              <input autoComplete="username" value={authForm.username} onChange={(event) => setAuthForm({ ...authForm, username: event.target.value })} placeholder={mode === "login" ? "pl. zsolt vagy email" : "pl. zsolt"} />
             </label>
+
+            {mode === "register" && (
+              <>
+                <label>
+                  Email
+                  <input autoComplete="email" type="email" value={authForm.email} onChange={(event) => setAuthForm({ ...authForm, email: event.target.value })} placeholder="email@example.com" />
+                </label>
+                <div className="code-row">
+                  <label>
+                    Megerősítő kód
+                    <input inputMode="numeric" value={authForm.verificationCode} onChange={(event) => setAuthForm({ ...authForm, verificationCode: event.target.value })} placeholder="6 jegyű kód" />
+                  </label>
+                  <button type="button" onClick={requestVerificationCode}>Kód kérése</button>
+                </div>
+                {codeStatus && <div className="success">{codeStatus}</div>}
+              </>
+            )}
 
             <label>
               Jelszó
@@ -482,7 +536,7 @@ export default function App() {
 
       {settingsOpen && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label="Beállítások">
-          <section className="profile-modal">
+          <section className="profile-modal compact-modal">
             <div className="modal-header">
               <h2>Beállítások</h2>
               <button type="button" onClick={() => setSettingsOpen(false)} aria-label="Bezárás">×</button>
@@ -491,10 +545,13 @@ export default function App() {
             <div className="settings-tabs">
               <button className={settingsTab === "profile" ? "active" : ""} type="button" onClick={() => setSettingsTab("profile")}>Profil</button>
               <button className={settingsTab === "security" ? "active" : ""} type="button" onClick={() => setSettingsTab("security")}>Titkosítás</button>
+              {user.username === "ZsoltY" && (
+                <button className={settingsTab === "admin" ? "active" : ""} type="button" onClick={() => { setSettingsTab("admin"); loadAdminStatus(); }}>Admin</button>
+              )}
             </div>
 
-            {settingsTab === "profile" ? (
-              <form className="settings-panel" onSubmit={saveProfile}>
+            {settingsTab === "profile" && (
+              <form className="settings-panel compact-panel" onSubmit={saveProfile}>
                 <div className="profile-preview">
                   <span className="avatar large" style={{ background: profileForm.avatarColor }}>{initials(profileForm.displayName || user.username)}</span>
                 </div>
@@ -507,26 +564,56 @@ export default function App() {
                     <button key={color} className={profileForm.avatarColor === color ? "color-dot selected" : "color-dot"} style={{ background: color }} type="button" onClick={() => setProfileForm({ ...profileForm, avatarColor: color })} aria-label={`Avatar szín ${color}`} />
                   ))}
                 </div>
-                <button className="primary-action" type="submit">Profil mentése</button>
+                <button className="primary-action" type="submit">Mentés</button>
               </form>
-            ) : (
-              <form className="settings-panel" onSubmit={saveChatSecret}>
+            )}
+
+            {settingsTab === "security" && (
+              <form className="settings-panel compact-panel" onSubmit={saveChatSecret}>
                 <label>
                   Beszélgetéskulcs
                   <input type="password" value={secretDraft} onChange={(event) => setSecretDraft(event.target.value)} placeholder="közös titok a barátokkal" />
                 </label>
-                <p className="settings-note">Ugyanezt a kulcsot kell megadnia annak is, akivel beszélsz. A szerver csak titkosított szöveget tárol.</p>
                 <div className="settings-actions">
-                  <button type="button" onClick={createNewSecret}>Kulcs generálása</button>
-                  <button className="primary-action" type="submit">{chatSecret ? "Kulcs frissítése" : "Kulcs mentése"}</button>
+                  <button type="button" onClick={createNewSecret}>Generálás</button>
+                  <button className="primary-action" type="submit">{chatSecret ? "Frissítés" : "Mentés"}</button>
                 </div>
                 <div className="push-card">
-                  <strong>Push értesítések</strong>
-                  <p>{isPushSupported() ? "Kapj értesítést új üzenetről ezen az eszközön." : "Ez a böngésző nem támogatja a push értesítést."}</p>
-                  <button type="button" onClick={enablePush} disabled={!isPushSupported()}>Push bekapcsolása</button>
+                  <strong>Push</strong>
+                  <p>{isPushSupported() ? "Értesítés új üzenetről ezen az eszközön." : "Ez a böngésző nem támogatja a push értesítést."}</p>
+                  <button type="button" onClick={enablePush} disabled={!isPushSupported()}>Bekapcsolás</button>
                   {pushStatus && <small>{pushStatus}</small>}
                 </div>
               </form>
+            )}
+
+            {settingsTab === "admin" && user.username === "ZsoltY" && (
+              <div className="settings-panel compact-panel">
+                <div className="admin-card">
+                  <strong>Fejlesztői panel</strong>
+                  <button type="button" onClick={loadAdminStatus}>Frissítés</button>
+                </div>
+                {adminStatus && (
+                  <>
+                    <div className="admin-grid">
+                      <div><span>Online</span><strong>{adminStatus.onlineUserIds.length}</strong></div>
+                      <div><span>Kapcsolat</span><strong>{adminStatus.onlineConnections.reduce((sum, item) => sum + item.sockets, 0)}</strong></div>
+                      <div><span>Uptime</span><strong>{adminStatus.uptimeSeconds}s</strong></div>
+                    </div>
+                    <div className="admin-users">
+                      {adminStatus.users.map((item) => (
+                        <div className="admin-user" key={item.id}>
+                          <span>
+                            <strong>{item.display_name || item.username}</strong>
+                            <small>{item.email || "nincs email"} · {item.message_count} üzenet</small>
+                          </span>
+                          <button type="button" disabled={item.username === "ZsoltY"} onClick={() => deleteAdminUser(item.id)}>Törlés</button>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </section>
         </div>

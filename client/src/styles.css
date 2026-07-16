@@ -749,6 +749,170 @@ input:focus {
   border-color: white;
 }
 
+.success {
+  border: 1px solid rgba(40, 209, 124, 0.45);
+  background: rgba(22, 163, 74, 0.16);
+  color: #bbf7d0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 14px;
+}
+
+.code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.code-row button {
+  min-height: 46px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font-weight: 700;
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
+.compact-modal {
+  max-height: min(86dvh, 720px);
+  overflow: hidden;
+  gap: 12px;
+  padding: 14px;
+}
+
+.compact-modal .modal-header h2 {
+  font-size: 19px;
+}
+
+.compact-modal .modal-header button {
+  width: 34px;
+  height: 34px;
+  font-size: 22px;
+}
+
+.compact-modal .settings-tabs {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.compact-modal .settings-tabs button {
+  min-height: 36px;
+  font-size: 13px;
+}
+
+.compact-panel {
+  min-height: 0;
+  overflow-y: auto;
+  gap: 12px;
+  padding-right: 2px;
+}
+
+.compact-panel .avatar.large {
+  width: 58px;
+  height: 58px;
+  font-size: 18px;
+}
+
+.compact-panel input {
+  min-height: 40px;
+}
+
+.compact-panel .primary-action,
+.compact-panel .settings-actions button {
+  min-height: 40px;
+}
+
+.compact-panel .color-dot {
+  width: 28px;
+  height: 28px;
+}
+
+.admin-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.admin-card p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.admin-card button,
+.admin-user button {
+  min-height: 36px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font-weight: 700;
+  padding: 0 12px;
+}
+
+.admin-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.admin-grid div {
+  display: grid;
+  gap: 2px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.admin-grid span,
+.admin-user small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.admin-users {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-user {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.admin-user span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.admin-user strong,
+.admin-user small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user button {
+  color: #fecaca;
+}
+
+.admin-user button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 @media (max-width: 760px) {
   .app-shell {
     display: block;
