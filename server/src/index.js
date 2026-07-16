@@ -4,15 +4,19 @@ import http from "http";
 import cors from "cors";
 import bcrypt from "bcrypt";
 import path from "path";
+import webpush from "web-push";
 import { fileURLToPath } from "url";
 import { Server } from "socket.io";
 import {
   createUser,
+  deletePushSubscription,
   findUserByUsername,
   findUserById,
   getAllUsersExcept,
   getConversation,
+  getPushSubscriptionsForUser,
   saveMessage,
+  savePushSubscription,
   updateUserProfile
 } from "./db.js";
 import { authMiddleware, signToken, verifyToken } from "./auth.js";
@@ -32,10 +36,18 @@ const corsOptions = {
   methods: ["GET", "POST", "PATCH"]
 };
 
+if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(
+    process.env.VAPID_SUBJECT || "mailto:admin@example.com",
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+  );
+}
+
 const io = new Server(server, { cors: corsOptions });
 
 app.use(cors(corsOptions));
-app.use(express.json({ limit: "32kb" }));
+app.use(express.json({ limit: "1.5mb" }));
 
 const onlineUsers = new Map();
 
@@ -45,6 +57,10 @@ function getOnlineUserIds() {
 
 function emitOnlineUsers() {
   io.emit("users:online", getOnlineUserIds());
+}
+
+function emitUsersChanged() {
+  io.emit("users:changed");
 }
 
 function normalizeUsername(username) {
@@ -76,7 +92,40 @@ function toSafeUser(user) {
   };
 }
 
+async function sendPushToUser(userId, payload) {
+  if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) return;
+
+  const subscriptions = getPushSubscriptionsForUser(userId);
+
+  await Promise.allSettled(
+    subscriptions.map(async ({ id, subscription }) => {
+      try {
+        await webpush.sendNotification(subscription, JSON.stringify(payload));
+      } catch (error) {
+        if (error.statusCode === 404 || error.statusCode === 410) {
+          deletePushSubscription(id);
+        } else {
+          console.error("Push error:", error.message);
+        }
+      }
+    })
+  );
+}
+
 app.get("/health", (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get("/push/vapid-public-key", (req, res) => {
+  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY || "" });
+});
+
+app.post("/push/subscribe", authMiddleware, (req, res) => {
+  if (!req.body?.endpoint) {
+    return res.status(400).json({ error: "Hiányzó push subscription." });
+  }
+
+  savePushSubscription(req.user.id, req.body);
   res.json({ ok: true });
 });
 
@@ -105,6 +154,7 @@ app.post("/auth/register", async (req, res) => {
       avatar_color: "#3466f6"
     };
 
+    emitUsersChanged();
     res.status(201).json({ token: signToken(user), user });
   } catch (error) {
     console.error("Register error:", error);
@@ -156,8 +206,11 @@ app.patch("/me/profile", authMiddleware, (req, res) => {
   }
 
   const user = updateUserProfile(req.user.id, { displayName, avatarColor });
+  const safeUser = toSafeUser(user);
 
-  res.json({ user: toSafeUser(user) });
+  io.to(`user:${req.user.id}`).emit("profile:updated", safeUser);
+  emitUsersChanged();
+  res.json({ user: safeUser });
 });
 
 app.get("/users", authMiddleware, (req, res) => {
@@ -225,18 +278,26 @@ io.on("connection", (socket) => {
         return callback?.({ ok: false, error: "Magadnak nem küldhetsz üzenetet." });
       }
 
-      if (!findUserById(receiverId)) {
+      const receiver = findUserById(receiverId);
+
+      if (!receiver) {
         return callback?.({ ok: false, error: "A címzett nem található." });
       }
 
-      if (content.length > 8000) {
-        return callback?.({ ok: false, error: "Az üzenet túl hosszú." });
+      if (content.length > 900000) {
+        return callback?.({ ok: false, error: "Az üzenet vagy kép túl nagy." });
       }
 
       const message = saveMessage(userId, receiverId, content);
+      const sender = findUserById(userId);
 
       io.to(`user:${receiverId}`).emit("message:new", message);
       socket.emit("message:new", message);
+      sendPushToUser(receiverId, {
+        title: sender?.display_name || sender?.username || "Privát Chat",
+        body: "Új titkosított üzeneted érkezett.",
+        url: "/"
+      });
 
       callback?.({ ok: true, message });
     } catch (error) {

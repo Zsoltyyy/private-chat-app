@@ -1,4 +1,4 @@
-const CACHE_NAME = "private-chat-v1";
+const CACHE_NAME = "private-chat-v2";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icons/icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -22,6 +22,38 @@ self.addEventListener("fetch", (event) => {
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
       return fetch(event.request);
+    })
+  );
+});
+
+self.addEventListener("push", (event) => {
+  const data = event.data?.json() || {};
+
+  event.waitUntil(
+    self.registration.showNotification(data.title || "Privát Chat", {
+      body: data.body || "Új üzeneted érkezett.",
+      icon: "/icons/icon.svg",
+      badge: "/icons/icon.svg",
+      data: {
+        url: data.url || "/"
+      }
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      const targetUrl = new URL(event.notification.data?.url || "/", self.location.origin).href;
+      const existingClient = clients.find((client) => client.url === targetUrl);
+
+      if (existingClient) {
+        return existingClient.focus();
+      }
+
+      return self.clients.openWindow(targetUrl);
     })
   );
 });

@@ -27,6 +27,15 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_messages_pair_created
   ON messages(sender_id, receiver_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    endpoint TEXT NOT NULL UNIQUE,
+    subscription_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  );
 `);
 
 const userColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
@@ -125,4 +134,34 @@ export function getConversation(userA, userB) {
       (m.sender_id = ? AND m.receiver_id = ?)
     ORDER BY m.created_at ASC, m.id ASC
   `).all(userA, userB, userB, userA);
+}
+
+export function savePushSubscription(userId, subscription) {
+  const subscriptionJson = JSON.stringify(subscription);
+
+  db.prepare(`
+    INSERT INTO push_subscriptions (user_id, endpoint, subscription_json)
+    VALUES (?, ?, ?)
+    ON CONFLICT(endpoint) DO UPDATE SET
+      user_id = excluded.user_id,
+      subscription_json = excluded.subscription_json
+  `).run(userId, subscription.endpoint, subscriptionJson);
+}
+
+export function getPushSubscriptionsForUser(userId) {
+  return db.prepare(`
+    SELECT id, subscription_json
+    FROM push_subscriptions
+    WHERE user_id = ?
+  `).all(userId).map((row) => ({
+    id: row.id,
+    subscription: JSON.parse(row.subscription_json)
+  }));
+}
+
+export function deletePushSubscription(id) {
+  db.prepare(`
+    DELETE FROM push_subscriptions
+    WHERE id = ?
+  `).run(id);
 }

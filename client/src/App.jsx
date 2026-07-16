@@ -7,9 +7,11 @@ import {
   getStoredChatSecret,
   setStoredChatSecret
 } from "./crypto";
+import { enablePushNotifications, isPushSupported } from "./push";
 import { connectSocket, disconnectSocket } from "./socket";
 
 const AVATAR_COLORS = ["#3466f6", "#7c3aed", "#db2777", "#ea580c", "#16a34a", "#0891b2"];
+const EMOJIS = ["😀", "😂", "😍", "😎", "🥳", "😅", "😮", "😢", "😡", "👍", "🙏", "🔥", "❤️", "💯", "🎉", "👀"];
 
 function displayName(person = {}) {
   return person.display_name || person.username || "";
@@ -29,6 +31,40 @@ function generateSecret() {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("-");
 }
 
+function parseMessageContent(content) {
+  if (!content?.startsWith("{")) return { type: "text", text: content || "" };
+
+  try {
+    const payload = JSON.parse(content);
+    if (payload.type === "image") return payload;
+  } catch {
+    return { type: "text", text: content };
+  }
+
+  return { type: "text", text: content };
+}
+
+async function imageFileToDataUrl(file) {
+  const image = await new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+
+  const canvas = document.createElement("canvas");
+  const maxSize = 1200;
+  const scale = Math.min(1, maxSize / Math.max(image.width, image.height));
+  canvas.width = Math.round(image.width * scale);
+  canvas.height = Math.round(image.height * scale);
+
+  const context = canvas.getContext("2d");
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  URL.revokeObjectURL(image.src);
+
+  return canvas.toDataURL("image/jpeg", 0.74);
+}
+
 export default function App() {
   const [user, setUser] = useState(getStoredUser());
   const [mode, setMode] = useState("login");
@@ -45,12 +81,15 @@ export default function App() {
   const [secretDraft, setSecretDraft] = useState(getStoredChatSecret());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState("profile");
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [pushStatus, setPushStatus] = useState("");
   const [profileForm, setProfileForm] = useState({
     displayName: user?.display_name || "",
     avatarColor: user?.avatar_color || AVATAR_COLORS[0]
   });
   const [chatError, setChatError] = useState("");
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const selectedUserIsOnline = useMemo(() => {
     if (!selectedUser) return false;
@@ -68,6 +107,15 @@ export default function App() {
     if (!activeSocket) return undefined;
 
     activeSocket.on("users:online", (ids) => setOnlineUserIds(ids));
+    activeSocket.on("users:changed", loadUsers);
+    activeSocket.on("profile:updated", (updatedUser) => {
+      updateStoredUser(updatedUser);
+      setUser(updatedUser);
+      setProfileForm({
+        displayName: updatedUser.display_name || "",
+        avatarColor: updatedUser.avatar_color || AVATAR_COLORS[0]
+      });
+    });
     activeSocket.on("message:new", (message) => {
       setMessages((current) => {
         const alreadyExists = current.some((item) => item.id === message.id);
@@ -83,6 +131,8 @@ export default function App() {
 
     return () => {
       activeSocket.off("users:online");
+      activeSocket.off("users:changed", loadUsers);
+      activeSocket.off("profile:updated");
       activeSocket.off("message:new");
       disconnectSocket();
     };
@@ -108,10 +158,16 @@ export default function App() {
               ? await decryptMessage(message.content, chatSecret, user.id, selectedUser.id)
               : "Titkosított üzenet. Add meg a beszélgetéskulcsot a Beállításokban.";
 
-            return { ...message, decryptedContent: content, decryptFailed: false };
+            return {
+              ...message,
+              parsedContent: parseMessageContent(content),
+              decryptedContent: content,
+              decryptFailed: false
+            };
           } catch {
             return {
               ...message,
+              parsedContent: { type: "text", text: "Nem sikerült visszafejteni. Más a beszélgetéskulcs." },
               decryptedContent: "Nem sikerült visszafejteni. Más a beszélgetéskulcs.",
               decryptFailed: true
             };
@@ -134,6 +190,10 @@ export default function App() {
       const data = await api("/users");
       setUsers(data.users);
       setOnlineUserIds(data.onlineUserIds || []);
+      setSelectedUser((current) => {
+        if (!current) return current;
+        return data.users.find((item) => item.id === current.id) || current;
+      });
     } catch (error) {
       setChatError(error.message);
     }
@@ -216,10 +276,17 @@ export default function App() {
     setChatSecret(nextSecret);
   }
 
-  async function sendMessage(event) {
-    event.preventDefault();
+  async function enablePush() {
+    try {
+      await enablePushNotifications();
+      setPushStatus("Push értesítés bekapcsolva ezen az eszközön.");
+    } catch (error) {
+      setPushStatus(error.message);
+    }
+  }
 
-    if (!socket || !selectedUser || !messageText.trim()) return;
+  async function sendEncryptedContent(content) {
+    if (!socket || !selectedUser) return;
 
     if (!chatSecret.trim()) {
       setChatError("Előbb add meg a beszélgetéskulcsot a Beállításokban.");
@@ -228,20 +295,39 @@ export default function App() {
       return;
     }
 
-    const encryptedContent = await encryptMessage(messageText.trim(), chatSecret, user.id, selectedUser.id);
+    const encryptedContent = await encryptMessage(content, chatSecret, user.id, selectedUser.id);
 
-    socket.emit(
-      "message:send",
-      { receiverId: selectedUser.id, content: encryptedContent },
-      (response) => {
-        if (!response?.ok) {
-          setChatError(response?.error || "Nem sikerült elküldeni.");
-          return;
-        }
-
-        setMessageText("");
+    socket.emit("message:send", { receiverId: selectedUser.id, content: encryptedContent }, (response) => {
+      if (!response?.ok) {
+        setChatError(response?.error || "Nem sikerült elküldeni.");
       }
-    );
+    });
+  }
+
+  async function sendMessage(event) {
+    event.preventDefault();
+    const text = messageText.trim();
+
+    if (!text) return;
+
+    await sendEncryptedContent(text);
+    setMessageText("");
+    setEmojiOpen(false);
+  }
+
+  async function sendImage(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setChatError("Csak képet lehet küldeni.");
+      return;
+    }
+
+    const dataUrl = await imageFileToDataUrl(file);
+    await sendEncryptedContent(JSON.stringify({ type: "image", dataUrl, name: file.name }));
   }
 
   if (!user) {
@@ -257,41 +343,24 @@ export default function App() {
           </div>
 
           <div className="tabs" role="tablist" aria-label="Bejelentkezési mód">
-            <button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")} type="button">
-              Belépés
-            </button>
-            <button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")} type="button">
-              Regisztráció
-            </button>
+            <button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")} type="button">Belépés</button>
+            <button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")} type="button">Regisztráció</button>
           </div>
 
           <form onSubmit={handleAuthSubmit}>
             <label>
               Felhasználónév
-              <input
-                autoComplete="username"
-                value={authForm.username}
-                onChange={(event) => setAuthForm({ ...authForm, username: event.target.value })}
-                placeholder="pl. zsolt"
-              />
+              <input autoComplete="username" value={authForm.username} onChange={(event) => setAuthForm({ ...authForm, username: event.target.value })} placeholder="pl. zsolt" />
             </label>
 
             <label>
               Jelszó
-              <input
-                autoComplete={mode === "login" ? "current-password" : "new-password"}
-                type="password"
-                value={authForm.password}
-                onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })}
-                placeholder="legalább 8 karakter"
-              />
+              <input autoComplete={mode === "login" ? "current-password" : "new-password"} type="password" value={authForm.password} onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })} placeholder="legalább 8 karakter" />
             </label>
 
             {authError && <div className="error">{authError}</div>}
 
-            <button className="primary-action" type="submit">
-              {mode === "login" ? "Belépés" : "Fiók létrehozása"}
-            </button>
+            <button className="primary-action" type="submit">{mode === "login" ? "Belépés" : "Fiók létrehozása"}</button>
           </form>
         </section>
       </main>
@@ -303,17 +372,13 @@ export default function App() {
       <aside className="conversation-list">
         <header className="list-header">
           <button className="profile-pill" onClick={() => setSettingsOpen(true)} type="button">
-            <span className="avatar small" style={{ background: user.avatar_color || AVATAR_COLORS[0] }}>
-              {initials(displayName(user))}
-            </span>
+            <span className="avatar small" style={{ background: user.avatar_color || AVATAR_COLORS[0] }}>{initials(displayName(user))}</span>
             <span>
               <span className="eyebrow">Privát Chat</span>
               <strong>{displayName(user)}</strong>
             </span>
           </button>
-          <button className="icon-button" onClick={handleLogout} type="button" aria-label="Kilépés">
-            ×
-          </button>
+          <button className="icon-button" onClick={handleLogout} type="button" aria-label="Kilépés">×</button>
         </header>
 
         <div className="search-row">
@@ -332,16 +397,10 @@ export default function App() {
 
         <div className="users">
           {users.length === 0 && <p className="muted empty-list">Még nincs másik felhasználó.</p>}
-
           {users.map((item) => {
             const online = onlineUserIds.includes(item.id);
             return (
-              <button
-                key={item.id}
-                className={selectedUser?.id === item.id ? "conversation selected" : "conversation"}
-                onClick={() => loadConversation(item)}
-                type="button"
-              >
+              <button key={item.id} className={selectedUser?.id === item.id ? "conversation selected" : "conversation"} onClick={() => loadConversation(item)} type="button">
                 <span className="avatar" style={{ background: item.avatar_color || AVATAR_COLORS[0] }}>
                   {initials(displayName(item))}
                   <span className={online ? "presence online" : "presence"} />
@@ -366,9 +425,7 @@ export default function App() {
         ) : (
           <>
             <header className="chat-topbar">
-              <button className="back-button" onClick={() => setSelectedUser(null)} type="button" aria-label="Vissza">
-                ‹
-              </button>
+              <button className="back-button" onClick={() => setSelectedUser(null)} type="button" aria-label="Vissza">‹</button>
               <span className="avatar small" style={{ background: selectedUser.avatar_color || AVATAR_COLORS[0] }}>
                 {initials(displayName(selectedUser))}
                 <span className={selectedUserIsOnline ? "presence online" : "presence"} />
@@ -378,9 +435,7 @@ export default function App() {
                 <span>{selectedUserIsOnline ? "Online most" : "Most offline"} · E2EE</span>
               </div>
               <button className="icon-button" type="button" aria-label="Hívás">☎</button>
-              <button className="icon-button" onClick={() => setSettingsOpen(true)} type="button" aria-label="Menü">
-                ⋮
-              </button>
+              <button className="icon-button" onClick={() => setSettingsOpen(true)} type="button" aria-label="Menü">⋮</button>
             </header>
 
             <div className="messages">
@@ -390,7 +445,11 @@ export default function App() {
                 return (
                   <div key={message.id} className={mine ? "message mine" : "message"}>
                     <div className={message.decryptFailed ? "bubble failed" : "bubble"}>
-                      <p>{message.decryptedContent}</p>
+                      {message.parsedContent?.type === "image" ? (
+                        <img className="message-image" src={message.parsedContent.dataUrl} alt={message.parsedContent.name || "Küldött kép"} />
+                      ) : (
+                        <p>{message.parsedContent?.text || message.decryptedContent}</p>
+                      )}
                       <time>{formatMessageTime(message.created_at)}</time>
                     </div>
                   </div>
@@ -402,15 +461,18 @@ export default function App() {
             {chatError && <div className="error chat-error">{chatError}</div>}
 
             <form className="composer" onSubmit={sendMessage}>
+              {emojiOpen && (
+                <div className="emoji-panel">
+                  {EMOJIS.map((emoji) => (
+                    <button key={emoji} type="button" onClick={() => setMessageText((value) => `${value}${emoji}`)}>{emoji}</button>
+                  ))}
+                </div>
+              )}
               <div className="composer-input">
-                <button type="button" aria-label="Emoji">☺</button>
-                <input
-                  value={messageText}
-                  onChange={(event) => setMessageText(event.target.value)}
-                  placeholder={chatSecret ? "Üzenet" : "Add meg a kulcsot a Beállításokban"}
-                  maxLength={2000}
-                />
-                <button type="button" aria-label="Melléklet">＋</button>
+                <button type="button" onClick={() => setEmojiOpen((value) => !value)} aria-label="Emoji">☺</button>
+                <input value={messageText} onChange={(event) => setMessageText(event.target.value)} placeholder={chatSecret ? "Üzenet" : "Add meg a kulcsot a Beállításokban"} maxLength={2000} />
+                <button type="button" onClick={() => fileInputRef.current?.click()} aria-label="Kép küldése">＋</button>
+                <input ref={fileInputRef} className="hidden-file" type="file" accept="image/*" onChange={sendImage} />
               </div>
               <button className="send-button" type="submit" aria-label="Küldés">➤</button>
             </form>
@@ -427,76 +489,42 @@ export default function App() {
             </div>
 
             <div className="settings-tabs">
-              <button
-                className={settingsTab === "profile" ? "active" : ""}
-                type="button"
-                onClick={() => setSettingsTab("profile")}
-              >
-                Profil
-              </button>
-              <button
-                className={settingsTab === "security" ? "active" : ""}
-                type="button"
-                onClick={() => setSettingsTab("security")}
-              >
-                Titkosítás
-              </button>
+              <button className={settingsTab === "profile" ? "active" : ""} type="button" onClick={() => setSettingsTab("profile")}>Profil</button>
+              <button className={settingsTab === "security" ? "active" : ""} type="button" onClick={() => setSettingsTab("security")}>Titkosítás</button>
             </div>
 
             {settingsTab === "profile" ? (
               <form className="settings-panel" onSubmit={saveProfile}>
                 <div className="profile-preview">
-                  <span className="avatar large" style={{ background: profileForm.avatarColor }}>
-                    {initials(profileForm.displayName || user.username)}
-                  </span>
+                  <span className="avatar large" style={{ background: profileForm.avatarColor }}>{initials(profileForm.displayName || user.username)}</span>
                 </div>
-
                 <label>
                   Megjelenített név
-                  <input
-                    value={profileForm.displayName}
-                    onChange={(event) => setProfileForm({ ...profileForm, displayName: event.target.value })}
-                    placeholder={user.username}
-                    maxLength={40}
-                  />
+                  <input value={profileForm.displayName} onChange={(event) => setProfileForm({ ...profileForm, displayName: event.target.value })} placeholder={user.username} maxLength={40} />
                 </label>
-
                 <div className="color-grid" aria-label="Avatar szín">
                   {AVATAR_COLORS.map((color) => (
-                    <button
-                      key={color}
-                      className={profileForm.avatarColor === color ? "color-dot selected" : "color-dot"}
-                      style={{ background: color }}
-                      type="button"
-                      onClick={() => setProfileForm({ ...profileForm, avatarColor: color })}
-                      aria-label={`Avatar szín ${color}`}
-                    />
+                    <button key={color} className={profileForm.avatarColor === color ? "color-dot selected" : "color-dot"} style={{ background: color }} type="button" onClick={() => setProfileForm({ ...profileForm, avatarColor: color })} aria-label={`Avatar szín ${color}`} />
                   ))}
                 </div>
-
                 <button className="primary-action" type="submit">Profil mentése</button>
               </form>
             ) : (
               <form className="settings-panel" onSubmit={saveChatSecret}>
                 <label>
                   Beszélgetéskulcs
-                  <input
-                    type="password"
-                    value={secretDraft}
-                    onChange={(event) => setSecretDraft(event.target.value)}
-                    placeholder="közös titok a barátokkal"
-                  />
+                  <input type="password" value={secretDraft} onChange={(event) => setSecretDraft(event.target.value)} placeholder="közös titok a barátokkal" />
                 </label>
-
-                <p className="settings-note">
-                  Ugyanezt a kulcsot kell megadnia annak is, akivel beszélsz. A szerver csak titkosított szöveget tárol.
-                </p>
-
+                <p className="settings-note">Ugyanezt a kulcsot kell megadnia annak is, akivel beszélsz. A szerver csak titkosított szöveget tárol.</p>
                 <div className="settings-actions">
                   <button type="button" onClick={createNewSecret}>Kulcs generálása</button>
-                  <button className="primary-action" type="submit">
-                    {chatSecret ? "Kulcs frissítése" : "Kulcs mentése"}
-                  </button>
+                  <button className="primary-action" type="submit">{chatSecret ? "Kulcs frissítése" : "Kulcs mentése"}</button>
+                </div>
+                <div className="push-card">
+                  <strong>Push értesítések</strong>
+                  <p>{isPushSupported() ? "Kapj értesítést új üzenetről ezen az eszközön." : "Ez a böngésző nem támogatja a push értesítést."}</p>
+                  <button type="button" onClick={enablePush} disabled={!isPushSupported()}>Push bekapcsolása</button>
+                  {pushStatus && <small>{pushStatus}</small>}
                 </div>
               </form>
             )}
