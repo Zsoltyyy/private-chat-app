@@ -129,6 +129,29 @@ function toSafeUser(user) {
 async function sendEmail({ to, subject, text }) {
   if (!to) return false;
 
+  if (process.env.RESEND_API_KEY) {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        from: process.env.EMAIL_FROM || "Privát Chat <onboarding@resend.dev>",
+        to,
+        subject,
+        text
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Resend email error: ${response.status} ${errorText}`);
+    }
+
+    return true;
+  }
+
   if (!mailTransport) {
     console.log(`[DEV EMAIL] To: ${to}\nSubject: ${subject}\n${text}`);
     return false;
