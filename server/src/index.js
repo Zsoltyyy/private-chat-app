@@ -28,6 +28,7 @@ import {
   saveEmailVerificationCode,
   saveMessage,
   savePushSubscription,
+  upsertAdminUser,
   updateUserProfile
 } from "./db.js";
 import { authMiddleware, signToken, verifyToken } from "./auth.js";
@@ -136,6 +137,16 @@ function toSafeUser(user) {
     display_name: user.display_name,
     avatar_color: user.avatar_color
   };
+}
+
+async function bootstrapAdminUser() {
+  const password = String(process.env.ADMIN_BOOTSTRAP_PASSWORD || "");
+  if (password.length < 8) return;
+
+  const email = normalizeEmail(process.env.ADMIN_BOOTSTRAP_EMAIL || "zsoltbiro30@gmail.com");
+  const passwordHash = await bcrypt.hash(password, 12);
+  upsertAdminUser("ZsoltY", passwordHash, email || null);
+  console.log("Admin bootstrap applied for ZsoltY. Remove ADMIN_BOOTSTRAP_PASSWORD after login.");
 }
 
 async function sendEmail({ to, subject, text }) {
@@ -550,6 +561,8 @@ io.on("connection", (socket) => {
     emitOnlineUsers();
   });
 });
+
+await bootstrapAdminUser();
 
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);

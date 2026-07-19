@@ -91,6 +91,25 @@ export function createUser(username, passwordHash, email = null) {
   `).run(username, email, email ? 1 : 1, passwordHash);
 }
 
+export function upsertAdminUser(username, passwordHash, email = null) {
+  const existing = findUserByUsername(username);
+
+  if (existing) {
+    db.prepare(`
+      UPDATE users
+      SET password_hash = ?,
+          email = coalesce(email, ?),
+          email_verified = 1
+      WHERE id = ?
+    `).run(passwordHash, email, existing.id);
+
+    return findUserByUsername(username);
+  }
+
+  createUser(username, passwordHash, email);
+  return findUserByUsername(username);
+}
+
 export function findUserByUsername(username) {
   return db.prepare(`
     SELECT * FROM users
