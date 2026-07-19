@@ -105,6 +105,10 @@ export default function App() {
     if (!user) return undefined;
 
     loadUsers();
+    if (isPushSupported() && Notification.permission === "granted") {
+      enablePushNotifications().catch(() => {});
+    }
+
     const activeSocket = connectSocket();
     setSocket(activeSocket);
 
