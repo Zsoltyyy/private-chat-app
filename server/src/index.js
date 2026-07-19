@@ -408,7 +408,12 @@ app.post("/admin/invite-codes", authMiddleware, (req, res) => {
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
-      createInviteCode(code, req.user.id);
+      try {
+        createInviteCode(code, req.user.id);
+      } catch (error) {
+        if (!String(error.message || "").includes("FOREIGN KEY")) throw error;
+        createInviteCode(code, null);
+      }
       return res.status(201).json({
         code,
         inviteCodes: getInviteCodes()
