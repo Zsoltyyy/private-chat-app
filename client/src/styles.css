@@ -844,6 +844,13 @@ input:focus {
   font-size: 13px;
 }
 
+.admin-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .admin-card button,
 .admin-user button {
   min-height: 36px;
@@ -906,6 +913,10 @@ input:focus {
 
 .admin-user button {
   color: #fecaca;
+}
+
+.admin-user.invite-code button {
+  color: var(--text);
 }
 
 .admin-user button:disabled {

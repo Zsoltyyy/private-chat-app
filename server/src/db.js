@@ -47,6 +47,17 @@ db.exec(`
     used_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS invite_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    created_by INTEGER,
+    used_by INTEGER,
+    used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(created_by) REFERENCES users(id),
+    FOREIGN KEY(used_by) REFERENCES users(id)
+  );
 `);
 
 const userColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
@@ -165,6 +176,48 @@ export function markEmailVerificationCodeUsed(id) {
     SET used_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(id);
+}
+
+export function createInviteCode(code, createdBy) {
+  return db.prepare(`
+    INSERT INTO invite_codes (code, created_by)
+    VALUES (?, ?)
+  `).run(code, createdBy);
+}
+
+export function getInviteCodes() {
+  return db.prepare(`
+    SELECT
+      invite_codes.id,
+      invite_codes.code,
+      invite_codes.created_at,
+      invite_codes.used_at,
+      creator.username AS created_by_username,
+      used_user.username AS used_by_username
+    FROM invite_codes
+    LEFT JOIN users creator ON creator.id = invite_codes.created_by
+    LEFT JOIN users used_user ON used_user.id = invite_codes.used_by
+    ORDER BY invite_codes.created_at DESC, invite_codes.id DESC
+    LIMIT 25
+  `).all();
+}
+
+export function findUnusedInviteCode(code) {
+  return db.prepare(`
+    SELECT *
+    FROM invite_codes
+    WHERE upper(code) = upper(?)
+      AND used_at IS NULL
+    LIMIT 1
+  `).get(code);
+}
+
+export function markInviteCodeUsed(id, usedBy) {
+  db.prepare(`
+    UPDATE invite_codes
+    SET used_by = ?, used_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(usedBy, id);
 }
 
 export function updateUserProfile(userId, profile) {

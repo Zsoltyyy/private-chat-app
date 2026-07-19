@@ -324,6 +324,19 @@ export default function App() {
     }
   }
 
+  async function createAdminInviteCode() {
+    try {
+      const data = await api("/admin/invite-codes", { method: "POST" });
+      setAdminStatus((current) => ({
+        ...(current || {}),
+        inviteCodes: data.inviteCodes || current?.inviteCodes || []
+      }));
+      setChatError(`Új meghívókód: ${data.code}`);
+    } catch (error) {
+      setChatError(error.message);
+    }
+  }
+
   async function sendEncryptedContent(content) {
     if (!socket || !selectedUser) return;
 
@@ -396,14 +409,10 @@ export default function App() {
                   Email
                   <input autoComplete="email" type="email" value={authForm.email} onChange={(event) => setAuthForm({ ...authForm, email: event.target.value })} placeholder="email@example.com" />
                 </label>
-                <div className="code-row">
-                  <label>
-                    Megerősítő kód
-                    <input inputMode="numeric" value={authForm.verificationCode} onChange={(event) => setAuthForm({ ...authForm, verificationCode: event.target.value })} placeholder="6 jegyű kód" />
-                  </label>
-                  <button type="button" onClick={requestVerificationCode}>Kód kérése</button>
-                </div>
-                {codeStatus && <div className="success">{codeStatus}</div>}
+                <label>
+                  Meghívókód
+                  <input autoComplete="one-time-code" value={authForm.verificationCode} onChange={(event) => setAuthForm({ ...authForm, verificationCode: event.target.value })} placeholder="PRIV-ABCD-1234" />
+                </label>
               </>
             )}
 
@@ -591,7 +600,10 @@ export default function App() {
               <div className="settings-panel compact-panel">
                 <div className="admin-card">
                   <strong>Fejlesztői panel</strong>
-                  <button type="button" onClick={loadAdminStatus}>Frissítés</button>
+                  <span className="admin-actions">
+                    <button type="button" onClick={createAdminInviteCode}>Kód generálás</button>
+                    <button type="button" onClick={loadAdminStatus}>Frissítés</button>
+                  </span>
                 </div>
                 {adminStatus && (
                   <>
@@ -599,6 +611,20 @@ export default function App() {
                       <div><span>Online</span><strong>{adminStatus.onlineUserIds.length}</strong></div>
                       <div><span>Kapcsolat</span><strong>{adminStatus.onlineConnections.reduce((sum, item) => sum + item.sockets, 0)}</strong></div>
                       <div><span>Uptime</span><strong>{adminStatus.uptimeSeconds}s</strong></div>
+                    </div>
+                    <div className="admin-users">
+                      {(adminStatus.inviteCodes || []).map((item) => (
+                        <div className="admin-user invite-code" key={item.id}>
+                          <span>
+                            <strong>{item.code}</strong>
+                            <small>{item.used_at ? `Felhasználta: ${item.used_by_username || "ismeretlen"}` : "Szabad meghívókód"}</small>
+                          </span>
+                          <button type="button" onClick={() => navigator.clipboard?.writeText(item.code)}>Másolás</button>
+                        </div>
+                      ))}
+                      {(adminStatus.inviteCodes || []).length === 0 && (
+                        <p className="muted">Még nincs meghívókód. Nyomj egy Kód generálást.</p>
+                      )}
                     </div>
                     <div className="admin-users">
                       {adminStatus.users.map((item) => (

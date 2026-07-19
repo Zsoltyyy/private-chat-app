@@ -10,16 +10,20 @@ import { fileURLToPath } from "url";
 import { Server } from "socket.io";
 import {
   createUser,
+  createInviteCode,
   deletePushSubscription,
   deleteUserById,
+  findUnusedInviteCode,
   findUserByEmail,
   findUserByUsername,
   findUserById,
   getAdminUsers,
   getAllUsersExcept,
   getConversation,
+  getInviteCodes,
   getLatestEmailVerificationCode,
   getPushSubscriptionsForUser,
+  markInviteCodeUsed,
   markEmailVerificationCodeUsed,
   saveEmailVerificationCode,
   saveMessage,
@@ -93,6 +97,14 @@ function normalizeEmail(email) {
 
 function createVerificationCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function createInviteCodeValue() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = new Uint8Array(8);
+  globalThis.crypto.getRandomValues(bytes);
+  const raw = Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
+  return `PRIV-${raw.slice(0, 4)}-${raw.slice(4)}`;
 }
 
 function isAdmin(user) {
@@ -248,49 +260,43 @@ app.post("/auth/register", async (req, res) => {
     const username = normalizeUsername(req.body.username);
     const email = normalizeEmail(req.body.email);
     const password = String(req.body.password || "");
-    const verificationCode = String(req.body.verificationCode || "").trim();
+    const inviteCodeValue = String(req.body.inviteCode || req.body.verificationCode || "").trim().toUpperCase();
     const validationError = validateCredentials(username, password);
 
     if (validationError) {
       return res.status(400).json({ error: validationError });
     }
 
-    if (!EMAIL_PATTERN.test(email)) {
-      return res.status(400).json({ error: "Érvényes email cím szükséges." });
+    if (email && !EMAIL_PATTERN.test(email)) {
+      return res.status(400).json({ error: "Érvényes email cím szükséges, vagy hagyd üresen." });
     }
 
-    if (!verificationCode) {
-      return res.status(400).json({ error: "Megerősítő kód szükséges." });
+    if (!inviteCodeValue) {
+      return res.status(400).json({ error: "Meghívókód szükséges." });
     }
 
     if (findUserByUsername(username)) {
       return res.status(409).json({ error: "Ez a felhasználónév már foglalt." });
     }
 
-    if (findUserByEmail(email)) {
+    if (email && findUserByEmail(email)) {
       return res.status(409).json({ error: "Ezzel az email címmel már van fiók." });
     }
 
-    const storedCode = getLatestEmailVerificationCode(email);
+    const inviteCode = findUnusedInviteCode(inviteCodeValue);
 
-    if (!storedCode || new Date(storedCode.expires_at).getTime() < Date.now()) {
-      return res.status(400).json({ error: "Lejárt vagy hiányzó megerősítő kód." });
-    }
-
-    const validCode = await bcrypt.compare(verificationCode, storedCode.code_hash);
-
-    if (!validCode) {
-      return res.status(400).json({ error: "Hibás megerősítő kód." });
+    if (!inviteCode) {
+      return res.status(400).json({ error: "Hibás vagy már felhasznált meghívókód." });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const result = createUser(username, passwordHash, email);
-    markEmailVerificationCodeUsed(storedCode.id);
+    const result = createUser(username, passwordHash, email || null);
+    markInviteCodeUsed(inviteCode.id, result.lastInsertRowid);
 
     const user = {
       id: result.lastInsertRowid,
       username,
-      email,
+      email: email || null,
       email_verified: 1,
       display_name: null,
       avatar_color: "#3466f6"
@@ -383,6 +389,7 @@ app.get("/admin/status", authMiddleware, (req, res) => {
 
   res.json({
     users: getAdminUsers(),
+    inviteCodes: getInviteCodes(),
     onlineUserIds: getOnlineUserIds(),
     onlineConnections: Array.from(onlineUsers.entries()).map(([userId, socketIds]) => ({
       userId: Number(userId),
@@ -390,6 +397,29 @@ app.get("/admin/status", authMiddleware, (req, res) => {
     })),
     uptimeSeconds: Math.round(process.uptime())
   });
+});
+
+app.post("/admin/invite-codes", authMiddleware, (req, res) => {
+  if (!isAdmin(req.user)) {
+    return res.status(403).json({ error: "Nincs jogosultság." });
+  }
+
+  let code = createInviteCodeValue();
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      createInviteCode(code, req.user.id);
+      return res.status(201).json({
+        code,
+        inviteCodes: getInviteCodes()
+      });
+    } catch (error) {
+      if (!String(error.message || "").includes("UNIQUE")) throw error;
+      code = createInviteCodeValue();
+    }
+  }
+
+  res.status(500).json({ error: "Nem sikerült meghívókódot generálni." });
 });
 
 app.delete("/admin/users/:userId", authMiddleware, async (req, res) => {
