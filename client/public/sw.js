@@ -1,4 +1,4 @@
-const CACHE_NAME = "private-chat-v3";
+const CACHE_NAME = "private-chat-v4";
 const STATIC_ASSETS = ["/manifest.webmanifest", "/icons/icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -41,13 +41,23 @@ self.addEventListener("fetch", (event) => {
 });
 
 self.addEventListener("push", (event) => {
-  const data = event.data?.json() || {};
+  let data = {};
+
+  try {
+    data = event.data?.json() || {};
+  } catch {
+    data = {};
+  }
 
   event.waitUntil(
     self.registration.showNotification(data.title || "Privát Chat", {
       body: data.body || "Új üzeneted érkezett.",
       icon: "/icons/icon.svg",
       badge: "/icons/icon.svg",
+      tag: data.tag || "private-chat-message",
+      renotify: true,
+      requireInteraction: false,
+      vibrate: [120, 60, 120],
       data: {
         url: data.url || "/"
       }
@@ -61,9 +71,10 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       const targetUrl = new URL(event.notification.data?.url || "/", self.location.origin).href;
-      const existingClient = clients.find((client) => client.url === targetUrl);
+      const existingClient = clients.find((client) => client.url.startsWith(self.location.origin));
 
       if (existingClient) {
+        existingClient.navigate(targetUrl);
         return existingClient.focus();
       }
 

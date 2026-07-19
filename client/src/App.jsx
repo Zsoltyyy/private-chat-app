@@ -7,7 +7,12 @@ import {
   getStoredChatSecret,
   setStoredChatSecret
 } from "./crypto";
-import { enablePushNotifications, isPushSupported } from "./push";
+import {
+  enablePushNotifications,
+  getPushSubscriptionState,
+  isPushEnabledPreference,
+  isPushSupported
+} from "./push";
 import { connectSocket, disconnectSocket } from "./socket";
 
 const AVATAR_COLORS = ["#3466f6", "#7c3aed", "#db2777", "#ea580c", "#16a34a", "#0891b2"];
@@ -105,8 +110,11 @@ export default function App() {
     if (!user) return undefined;
 
     loadUsers();
-    if (isPushSupported() && Notification.permission === "granted") {
+    if (isPushSupported() && Notification.permission === "granted" && isPushEnabledPreference()) {
       enablePushNotifications().catch(() => {});
+      getPushSubscriptionState()
+        .then((state) => setPushStatus(state.subscribed ? "Push értesítés aktív ezen az eszközön." : "Push újraaktiválás szükséges."))
+        .catch(() => {});
     }
 
     const activeSocket = connectSocket();
@@ -300,7 +308,7 @@ export default function App() {
 
   async function enablePush() {
     try {
-      await enablePushNotifications();
+      await enablePushNotifications({ force: true });
       setPushStatus("Push értesítés bekapcsolva ezen az eszközön.");
     } catch (error) {
       setPushStatus(error.message);
