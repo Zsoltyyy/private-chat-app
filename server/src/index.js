@@ -21,6 +21,7 @@ import {
   getAllUsersExcept,
   getConversation,
   getInviteCodes,
+  deleteInviteCodeById,
   getLatestEmailVerificationCode,
   getPushSubscriptionsForUser,
   markInviteCodeUsed,
@@ -436,6 +437,22 @@ app.post("/admin/invite-codes", authMiddleware, async (req, res) => {
   }
 
   res.status(500).json({ error: "Nem sikerült meghívókódot generálni." });
+});
+
+app.delete("/admin/invite-codes/:id", authMiddleware, async (req, res) => {
+  if (!isAdmin(req.user)) {
+    return res.status(403).json({ error: "Nincs jogosultság." });
+  }
+
+  const id = Number(req.params.id);
+
+  if (!id) {
+    return res.status(400).json({ error: "Érvénytelen meghívókód." });
+  }
+
+  await deleteInviteCodeById(id);
+
+  res.json({ ok: true, inviteCodes: await getInviteCodes() });
 });
 
 app.delete("/admin/users/:userId", authMiddleware, async (req, res) => {
