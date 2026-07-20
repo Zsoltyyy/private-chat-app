@@ -716,6 +716,23 @@ input:focus {
   place-items: center;
 }
 
+.image-picker-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.background-preview {
+  width: 100%;
+  min-height: 96px;
+  border-radius: 18px;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
 .settings-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;

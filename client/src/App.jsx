@@ -68,6 +68,34 @@ async function imageFileToDataUrl(file) {
   return canvas.toDataURL("image/jpeg", 0.74);
 }
 
+function getStoredProfilePicture(userId) {
+  return userId ? localStorage.getItem(`private-chat-profile-picture:${userId}`) || "" : "";
+}
+
+function setStoredProfilePicture(userId, dataUrl) {
+  if (!userId) return;
+  localStorage.setItem(`private-chat-profile-picture:${userId}`, dataUrl);
+}
+
+function clearStoredProfilePicture(userId) {
+  if (!userId) return;
+  localStorage.removeItem(`private-chat-profile-picture:${userId}`);
+}
+
+function getStoredChatBackground(userId) {
+  return userId ? localStorage.getItem(`private-chat-background:${userId}`) || "" : "";
+}
+
+function setStoredChatBackground(userId, dataUrl) {
+  if (!userId) return;
+  localStorage.setItem(`private-chat-background:${userId}`, dataUrl);
+}
+
+function clearStoredChatBackground(userId) {
+  if (!userId) return;
+  localStorage.removeItem(`private-chat-background:${userId}`);
+}
+
 export default function App() {
   const [user, setUser] = useState(getStoredUser());
   const [mode, setMode] = useState("login");
@@ -94,9 +122,15 @@ export default function App() {
     displayName: user?.display_name || "",
     avatarColor: user?.avatar_color || AVATAR_COLORS[0]
   });
+  const [profilePicture, setProfilePicture] = useState(user ? getStoredProfilePicture(user.id) : "");
+  const [profilePictureDraft, setProfilePictureDraft] = useState(user ? getStoredProfilePicture(user.id) : "");
+  const [chatBackground, setChatBackground] = useState(user ? getStoredChatBackground(user.id) : "");
+  const [chatBackgroundDraft, setChatBackgroundDraft] = useState(user ? getStoredChatBackground(user.id) : "");
   const [chatError, setChatError] = useState("");
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const profilePictureInputRef = useRef(null);
+  const backgroundInputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const selectedUserRef = useRef(null);
   const decryptedMessageIdsRef = useRef(new Set());
@@ -119,6 +153,11 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return undefined;
+
+    setProfilePicture(getStoredProfilePicture(user.id));
+    setProfilePictureDraft(getStoredProfilePicture(user.id));
+    setChatBackground(getStoredChatBackground(user.id));
+    setChatBackgroundDraft(getStoredChatBackground(user.id));
 
     loadUsers();
     if (isPushSupported() && Notification.permission === "granted" && isPushEnabledPreference()) {
@@ -409,6 +448,10 @@ export default function App() {
 
       updateStoredUser(data.user);
       setUser(data.user);
+      setProfilePicture(profilePictureDraft);
+      setChatBackground(chatBackgroundDraft);
+      setStoredProfilePicture(data.user.id, profilePictureDraft);
+      setStoredChatBackground(data.user.id, chatBackgroundDraft);
       await loadUsers();
     } catch (error) {
       setChatError(error.message);
@@ -534,6 +577,12 @@ export default function App() {
     }
 
     const dataUrl = await imageFileToDataUrl(file);
+
+    if (dataUrl.length > 2800000) {
+      setChatError("A kép túl nagy. Válassz kisebb méretű képet.");
+      return;
+    }
+
     await sendEncryptedContent(JSON.stringify({ type: "image", dataUrl, name: file.name }));
   }
 
@@ -635,7 +684,15 @@ export default function App() {
         </div>
       </aside>
 
-      <section className="chat-screen">
+      <section
+        className="chat-screen"
+        style={chatBackground ? {
+          backgroundImage: `url(${chatBackground}), linear-gradient(180deg, rgba(15, 18, 32, 0.98), #11141b 42%)`,
+          backgroundSize: "cover, auto",
+          backgroundPosition: "center, top",
+          backgroundRepeat: "no-repeat, no-repeat"
+        } : undefined}
+      >
         {!selectedUser ? (
           <div className="empty-chat">
             <div className="empty-mark">PC</div>
@@ -721,7 +778,50 @@ export default function App() {
             {settingsTab === "profile" && (
               <form className="settings-panel compact-panel" onSubmit={saveProfile}>
                 <div className="profile-preview">
-                  <span className="avatar large" style={{ background: profileForm.avatarColor }}>{initials(profileForm.displayName || user.username)}</span>
+                  <span className="avatar large" style={profilePictureDraft ? { backgroundImage: `url(${profilePictureDraft})`, backgroundSize: "cover", backgroundPosition: "center" } : { background: profileForm.avatarColor }}>{profilePictureDraft ? "" : initials(profileForm.displayName || user.username)}</span>
+                </div>
+                <label>
+                  Profilkép
+                  <div className="image-picker-row">
+                    <button type="button" className="secondary-action" onClick={() => profilePictureInputRef.current?.click()}>Kép kiválasztása</button>
+                    <button type="button" className="secondary-action" onClick={() => { setProfilePictureDraft(""); }} disabled={!profilePictureDraft}>Törlés</button>
+                  </div>
+                  <input ref={profilePictureInputRef} className="hidden-file" type="file" accept="image/*" onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (!file) return;
+                    if (!file.type.startsWith("image/")) {
+                      setChatError("Csak képet lehet választani.");
+                      return;
+                    }
+                    const dataUrl = await imageFileToDataUrl(file);
+                    setProfilePictureDraft(dataUrl);
+                  }} />
+                </label>
+                <label>
+                  Chat háttér
+                  <div className="image-picker-row">
+                    <button type="button" className="secondary-action" onClick={() => backgroundInputRef.current?.click()}>Kép kiválasztása</button>
+                    <button type="button" className="secondary-action" onClick={() => { setChatBackgroundDraft(""); }} disabled={!chatBackgroundDraft}>Törlés</button>
+                  </div>
+                  <input ref={backgroundInputRef} className="hidden-file" type="file" accept="image/*" onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (!file) return;
+                    if (!file.type.startsWith("image/")) {
+                      setChatError("Csak képet lehet választani.");
+                      return;
+                    }
+                    const dataUrl = await imageFileToDataUrl(file);
+                    if (dataUrl.length > 2800000) {
+                      setChatError("A háttérkép túl nagy. Válassz kisebb méretű képet.");
+                      return;
+                    }
+                    setChatBackgroundDraft(dataUrl);
+                  }} />
+                </label>
+                <div className="preview-row">
+                  {chatBackgroundDraft && <div className="background-preview" style={{ backgroundImage: `url(${chatBackgroundDraft})` }} />}
                 </div>
                 <label>
                   Megjelenített név

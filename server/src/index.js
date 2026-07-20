@@ -66,7 +66,7 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
 const io = new Server(server, { cors: corsOptions });
 
 app.use(cors(corsOptions));
-app.use(express.json({ limit: "1.5mb" }));
+app.use(express.json({ limit: "4mb" }));
 
 const onlineUsers = new Map();
 const mailTransport = process.env.SMTP_HOST
@@ -598,7 +598,7 @@ io.on("connection", (socket) => {
         return callback?.({ ok: false, error: "A címzett nem található." });
       }
 
-      if (content.length > 900000) {
+      if (content.length > 3200000) {
         return callback?.({ ok: false, error: "Az üzenet vagy kép túl nagy." });
       }
 
