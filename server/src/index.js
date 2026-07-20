@@ -604,20 +604,15 @@ io.on("connection", (socket) => {
 
       const message = await saveMessage(userId, receiverId, content);
       const sender = await findUserById(userId);
-      const receiverSockets = onlineUsers.get(receiverId);
-      const isReceiverOnline = receiverSockets && receiverSockets.size > 0;
 
       io.to(`user:${receiverId}`).emit("message:new", message);
       socket.emit("message:new", message);
       emitUsersChanged();
-
-      if (!isReceiverOnline) {
-        sendPushToUser(receiverId, {
-          title: sender?.display_name || sender?.username || "Privát Chat",
-          body: "Új titkosított üzeneted érkezett.",
-          url: "/"
-        });
-      }
+      sendPushToUser(receiverId, {
+        title: sender?.display_name || sender?.username || "Privát Chat",
+        body: "Új titkosított üzeneted érkezett.",
+        url: "/"
+      });
 
       callback?.({ ok: true, message });
     } catch (error) {
