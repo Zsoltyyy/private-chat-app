@@ -145,7 +145,7 @@ async function bootstrapAdminUser() {
 
   const email = normalizeEmail(process.env.ADMIN_BOOTSTRAP_EMAIL || "zsoltbiro30@gmail.com");
   const passwordHash = await bcrypt.hash(password, 12);
-  upsertAdminUser("ZsoltY", passwordHash, email || null);
+  await upsertAdminUser("ZsoltY", passwordHash, email || null);
   console.log("Admin bootstrap applied for ZsoltY. Remove ADMIN_BOOTSTRAP_PASSWORD after login.");
 }
 
@@ -201,7 +201,7 @@ async function sendVerificationEmail(email, code) {
 async function sendPushToUser(userId, payload) {
   if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) return;
 
-  const subscriptions = getPushSubscriptionsForUser(userId);
+  const subscriptions = await getPushSubscriptionsForUser(userId);
 
   await Promise.allSettled(
     subscriptions.map(async ({ id, subscription }) => {
@@ -209,7 +209,7 @@ async function sendPushToUser(userId, payload) {
         await webpush.sendNotification(subscription, JSON.stringify(payload));
       } catch (error) {
         if (error.statusCode === 404 || error.statusCode === 410) {
-          deletePushSubscription(id);
+          await deletePushSubscription(id);
         } else {
           console.error("Push error:", error.message);
         }
@@ -226,12 +226,12 @@ app.get("/push/vapid-public-key", (req, res) => {
   res.json({ publicKey: process.env.VAPID_PUBLIC_KEY || "" });
 });
 
-app.post("/push/subscribe", authMiddleware, (req, res) => {
+app.post("/push/subscribe", authMiddleware, async (req, res) => {
   if (!req.body?.endpoint) {
     return res.status(400).json({ error: "Hiányzó push subscription." });
   }
 
-  savePushSubscription(req.user.id, req.body);
+  await savePushSubscription(req.user.id, req.body);
   res.json({ ok: true });
 });
 
@@ -243,7 +243,7 @@ app.post("/auth/request-code", async (req, res) => {
       return res.status(400).json({ error: "Érvényes email cím szükséges." });
     }
 
-    if (findUserByEmail(email)) {
+    if (await findUserByEmail(email)) {
       return res.status(409).json({ error: "Ezzel az email címmel már van fiók." });
     }
 
@@ -251,7 +251,7 @@ app.post("/auth/request-code", async (req, res) => {
     const codeHash = await bcrypt.hash(code, 10);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
-    saveEmailVerificationCode(email, codeHash, expiresAt);
+    await saveEmailVerificationCode(email, codeHash, expiresAt);
     await sendVerificationEmail(email, code);
 
     res.json({
@@ -286,23 +286,23 @@ app.post("/auth/register", async (req, res) => {
       return res.status(400).json({ error: "Meghívókód szükséges." });
     }
 
-    if (findUserByUsername(username)) {
+    if (await findUserByUsername(username)) {
       return res.status(409).json({ error: "Ez a felhasználónév már foglalt." });
     }
 
-    if (email && findUserByEmail(email)) {
+    if (email && (await findUserByEmail(email))) {
       return res.status(409).json({ error: "Ezzel az email címmel már van fiók." });
     }
 
-    const inviteCode = findUnusedInviteCode(inviteCodeValue);
+    const inviteCode = await findUnusedInviteCode(inviteCodeValue);
 
     if (!inviteCode) {
       return res.status(400).json({ error: "Hibás vagy már felhasznált meghívókód." });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const result = createUser(username, passwordHash, email || null);
-    markInviteCodeUsed(inviteCode.id, result.lastInsertRowid);
+    const result = await createUser(username, passwordHash, email || null);
+    await markInviteCodeUsed(inviteCode.id, result.lastInsertRowid);
 
     const user = {
       id: result.lastInsertRowid,
@@ -325,7 +325,7 @@ app.post("/auth/login", async (req, res) => {
   try {
     const username = normalizeUsername(req.body.username);
     const password = String(req.body.password || "");
-    const user = findUserByUsername(username) || findUserByEmail(normalizeEmail(username));
+    const user = await findUserByUsername(username) || await findUserByEmail(normalizeEmail(username));
 
     if (!user) {
       return res.status(401).json({ error: "Hibás felhasználónév/email vagy jelszó." });
@@ -346,8 +346,8 @@ app.post("/auth/login", async (req, res) => {
   }
 });
 
-app.get("/me", authMiddleware, (req, res) => {
-  const user = findUserById(req.user.id);
+app.get("/me", authMiddleware, async (req, res) => {
+  const user = await findUserById(req.user.id);
 
   if (!user) {
     return res.status(404).json({ error: "Felhasználó nem található." });
@@ -356,7 +356,7 @@ app.get("/me", authMiddleware, (req, res) => {
   res.json({ user });
 });
 
-app.patch("/me/profile", authMiddleware, (req, res) => {
+app.patch("/me/profile", authMiddleware, async (req, res) => {
   const displayName = String(req.body.displayName || "").trim().slice(0, 40) || null;
   const avatarColor = String(req.body.avatarColor || "#3466f6").trim();
 
@@ -364,7 +364,7 @@ app.patch("/me/profile", authMiddleware, (req, res) => {
     return res.status(400).json({ error: "Érvénytelen avatar szín." });
   }
 
-  const user = updateUserProfile(req.user.id, { displayName, avatarColor });
+  const user = await updateUserProfile(req.user.id, { displayName, avatarColor });
   const safeUser = toSafeUser(user);
 
   io.to(`user:${req.user.id}`).emit("profile:updated", safeUser);
@@ -372,35 +372,35 @@ app.patch("/me/profile", authMiddleware, (req, res) => {
   res.json({ user: safeUser });
 });
 
-app.get("/users", authMiddleware, (req, res) => {
+app.get("/users", authMiddleware, async (req, res) => {
   res.json({
-    users: getAllUsersExcept(req.user.id),
+    users: await getAllUsersExcept(req.user.id),
     onlineUserIds: getOnlineUserIds()
   });
 });
 
-app.get("/messages/:userId", authMiddleware, (req, res) => {
+app.get("/messages/:userId", authMiddleware, async (req, res) => {
   const otherUserId = Number(req.params.userId);
 
   if (!otherUserId) {
     return res.status(400).json({ error: "Érvénytelen felhasználó." });
   }
 
-  if (!findUserById(otherUserId)) {
+  if (!(await findUserById(otherUserId))) {
     return res.status(404).json({ error: "A címzett nem található." });
   }
 
-  res.json({ messages: getConversation(req.user.id, otherUserId) });
+  res.json({ messages: await getConversation(req.user.id, otherUserId) });
 });
 
-app.get("/admin/status", authMiddleware, (req, res) => {
+app.get("/admin/status", authMiddleware, async (req, res) => {
   if (!isAdmin(req.user)) {
     return res.status(403).json({ error: "Nincs jogosultság." });
   }
 
   res.json({
-    users: getAdminUsers(),
-    inviteCodes: getInviteCodes(),
+    users: await getAdminUsers(),
+    inviteCodes: await getInviteCodes(),
     onlineUserIds: getOnlineUserIds(),
     onlineConnections: Array.from(onlineUsers.entries()).map(([userId, socketIds]) => ({
       userId: Number(userId),
@@ -410,7 +410,7 @@ app.get("/admin/status", authMiddleware, (req, res) => {
   });
 });
 
-app.post("/admin/invite-codes", authMiddleware, (req, res) => {
+app.post("/admin/invite-codes", authMiddleware, async (req, res) => {
   if (!isAdmin(req.user)) {
     return res.status(403).json({ error: "Nincs jogosultság." });
   }
@@ -420,14 +420,14 @@ app.post("/admin/invite-codes", authMiddleware, (req, res) => {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       try {
-        createInviteCode(code, req.user.id);
+        await createInviteCode(code, req.user.id);
       } catch (error) {
         if (!String(error.message || "").includes("FOREIGN KEY")) throw error;
-        createInviteCode(code, null);
+        await createInviteCode(code, null);
       }
       return res.status(201).json({
         code,
-        inviteCodes: getInviteCodes()
+        inviteCodes: await getInviteCodes()
       });
     } catch (error) {
       if (!String(error.message || "").includes("UNIQUE")) throw error;
@@ -453,13 +453,13 @@ app.delete("/admin/users/:userId", authMiddleware, async (req, res) => {
     return res.status(400).json({ error: "Saját admin fiókot nem törölhetsz." });
   }
 
-  const user = findUserById(userId);
+  const user = await findUserById(userId);
 
   if (!user) {
     return res.status(404).json({ error: "Felhasználó nem található." });
   }
 
-  deleteUserById(userId);
+  await deleteUserById(userId);
   io.to(`user:${userId}`).emit("account:deleted");
   emitUsersChanged();
   emitOnlineUsers();
@@ -506,7 +506,7 @@ io.on("connection", (socket) => {
   onlineUsers.set(userId, socketIds);
   emitOnlineUsers();
 
-  socket.on("message:send", (payload, callback) => {
+  socket.on("message:send", async (payload, callback) => {
     try {
       const receiverId = Number(payload?.receiverId);
       const content = String(payload?.content || "").trim();
@@ -519,7 +519,7 @@ io.on("connection", (socket) => {
         return callback?.({ ok: false, error: "Magadnak nem küldhetsz üzenetet." });
       }
 
-      const receiver = findUserById(receiverId);
+      const receiver = await findUserById(receiverId);
 
       if (!receiver) {
         return callback?.({ ok: false, error: "A címzett nem található." });
@@ -529,8 +529,8 @@ io.on("connection", (socket) => {
         return callback?.({ ok: false, error: "Az üzenet vagy kép túl nagy." });
       }
 
-      const message = saveMessage(userId, receiverId, content);
-      const sender = findUserById(userId);
+      const message = await saveMessage(userId, receiverId, content);
+      const sender = await findUserById(userId);
 
       io.to(`user:${receiverId}`).emit("message:new", message);
       socket.emit("message:new", message);

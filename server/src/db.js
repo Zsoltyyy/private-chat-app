@@ -1,101 +1,252 @@
 import Database from "better-sqlite3";
+import { Pool } from "pg";
 
-export const db = new Database(process.env.DATABASE_PATH || "chat.db");
+const databaseUrl = process.env.DATABASE_URL || "";
+const usePostgres = Boolean(databaseUrl);
 
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
-    email TEXT UNIQUE,
-    email_verified INTEGER NOT NULL DEFAULT 1,
-    display_name TEXT,
-    avatar_color TEXT NOT NULL DEFAULT '#3466f6',
-    password_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sender_id INTEGER NOT NULL,
-    receiver_id INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(sender_id) REFERENCES users(id),
-    FOREIGN KEY(receiver_id) REFERENCES users(id)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_messages_pair_created
-  ON messages(sender_id, receiver_id, created_at);
-
-  CREATE TABLE IF NOT EXISTS push_subscriptions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    endpoint TEXT NOT NULL UNIQUE,
-    subscription_json TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS email_verification_codes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL,
-    code_hash TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    used_at TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS invite_codes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    code TEXT NOT NULL UNIQUE,
-    created_by INTEGER,
-    used_by INTEGER,
-    used_at TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(created_by) REFERENCES users(id),
-    FOREIGN KEY(used_by) REFERENCES users(id)
-  );
-`);
-
-const userColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
-
-if (!userColumns.includes("display_name")) {
-  db.prepare("ALTER TABLE users ADD COLUMN display_name TEXT").run();
+function createSqliteConnection() {
+  const sqliteDb = new Database(process.env.DATABASE_PATH || "chat.db");
+  sqliteDb.pragma("journal_mode = WAL");
+  sqliteDb.pragma("foreign_keys = ON");
+  return sqliteDb;
 }
 
-if (!userColumns.includes("email")) {
-  db.prepare("ALTER TABLE users ADD COLUMN email TEXT").run();
+function createPostgresConnection() {
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined
+  });
+
+  return {
+    kind: "postgres",
+    pool,
+    exec(query) {
+      return pool.query(query);
+    },
+    pragma() {},
+    prepare(statementSql) {
+      return {
+        run(...params) {
+          return executePostgresStatement(pool, statementSql, params);
+        },
+        get(...params) {
+          return executePostgresQuery(pool, statementSql, params, "get");
+        },
+        all(...params) {
+          return executePostgresQuery(pool, statementSql, params, "all");
+        }
+      };
+    }
+  };
 }
 
-if (!userColumns.includes("email_verified")) {
-  db.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1").run();
+function executePostgresStatement(pool, statementSql, params) {
+  const normalizedSql = statementSql.trim();
+  const shouldReturnId = /\binsert\b/i.test(normalizedSql) && !/\breturning\b/i.test(normalizedSql);
+  const sql = shouldReturnId ? `${normalizedSql} RETURNING id` : normalizedSql;
+
+  return pool.query(sql, params).then((result) => ({
+    changes: result.rowCount ?? 0,
+    lastInsertRowid: result.rows?.[0]?.id ?? null
+  }));
 }
 
-if (!userColumns.includes("avatar_color")) {
-  db.prepare("ALTER TABLE users ADD COLUMN avatar_color TEXT NOT NULL DEFAULT '#3466f6'").run();
+function executePostgresQuery(pool, statementSql, params, mode) {
+  return pool.query(statementSql, params).then((result) => {
+    if (mode === "get") {
+      return result.rows[0] ?? null;
+    }
+
+    return result.rows;
+  });
 }
 
-db.exec(`
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
-  ON users(lower(email))
-  WHERE email IS NOT NULL;
-`);
+export const db = usePostgres ? createPostgresConnection() : createSqliteConnection();
 
-export function createUser(username, passwordHash, email = null) {
+function initializeSqliteSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      email TEXT UNIQUE,
+      email_verified INTEGER NOT NULL DEFAULT 1,
+      display_name TEXT,
+      avatar_color TEXT NOT NULL DEFAULT '#3466f6',
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sender_id INTEGER NOT NULL,
+      receiver_id INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(sender_id) REFERENCES users(id),
+      FOREIGN KEY(receiver_id) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_messages_pair_created
+    ON messages(sender_id, receiver_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      subscription_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS email_verification_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS invite_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT NOT NULL UNIQUE,
+      created_by INTEGER,
+      used_by INTEGER,
+      used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(created_by) REFERENCES users(id),
+      FOREIGN KEY(used_by) REFERENCES users(id)
+    );
+  `);
+
+  const userColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
+
+  if (!userColumns.includes("display_name")) {
+    db.prepare("ALTER TABLE users ADD COLUMN display_name TEXT").run();
+  }
+
+  if (!userColumns.includes("email")) {
+    db.prepare("ALTER TABLE users ADD COLUMN email TEXT").run();
+  }
+
+  if (!userColumns.includes("email_verified")) {
+    db.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1").run();
+  }
+
+  if (!userColumns.includes("avatar_color")) {
+    db.prepare("ALTER TABLE users ADD COLUMN avatar_color TEXT NOT NULL DEFAULT '#3466f6'").run();
+  }
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
+    ON users(lower(email))
+    WHERE email IS NOT NULL;
+  `);
+}
+
+function initializePostgresSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      email TEXT UNIQUE,
+      email_verified INTEGER NOT NULL DEFAULT 1,
+      display_name TEXT,
+      avatar_color TEXT NOT NULL DEFAULT '#3466f6',
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+      sender_id INTEGER NOT NULL,
+      receiver_id INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(sender_id) REFERENCES users(id),
+      FOREIGN KEY(receiver_id) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_messages_pair_created
+    ON messages(sender_id, receiver_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      endpoint TEXT NOT NULL UNIQUE,
+      subscription_json TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS email_verification_codes (
+      id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+      email TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS invite_codes (
+      id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      created_by INTEGER,
+      used_by INTEGER,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(created_by) REFERENCES users(id),
+      FOREIGN KEY(used_by) REFERENCES users(id)
+    );
+  `);
+
+  const userColumns = db.prepare(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'users'
+  `).all().map((column) => column.column_name);
+
+  if (!userColumns.includes("display_name")) {
+    db.prepare("ALTER TABLE users ADD COLUMN display_name TEXT").run();
+  }
+
+  if (!userColumns.includes("email")) {
+    db.prepare("ALTER TABLE users ADD COLUMN email TEXT").run();
+  }
+
+  if (!userColumns.includes("email_verified")) {
+    db.prepare("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1").run();
+  }
+
+  if (!userColumns.includes("avatar_color")) {
+    db.prepare("ALTER TABLE users ADD COLUMN avatar_color TEXT NOT NULL DEFAULT '#3466f6'").run();
+  }
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
+    ON users(lower(email))
+    WHERE email IS NOT NULL;
+  `);
+}
+
+if (db.kind === "postgres") {
+  initializePostgresSchema();
+} else {
+  initializeSqliteSchema();
+}
+
+export async function createUser(username, passwordHash, email = null) {
   return db.prepare(`
     INSERT INTO users (username, email, email_verified, password_hash)
     VALUES (?, ?, ?, ?)
   `).run(username, email, email ? 1 : 1, passwordHash);
 }
 
-export function upsertAdminUser(username, passwordHash, email = null) {
-  const existing = findUserByUsername(username);
+export async function upsertAdminUser(username, passwordHash, email = null) {
+  const existing = await findUserByUsername(username);
 
   if (existing) {
-    db.prepare(`
+    await db.prepare(`
       UPDATE users
       SET password_hash = ?,
           email = coalesce(email, ?),
@@ -106,25 +257,25 @@ export function upsertAdminUser(username, passwordHash, email = null) {
     return findUserByUsername(username);
   }
 
-  createUser(username, passwordHash, email);
+  await createUser(username, passwordHash, email);
   return findUserByUsername(username);
 }
 
-export function findUserByUsername(username) {
+export async function findUserByUsername(username) {
   return db.prepare(`
     SELECT * FROM users
     WHERE lower(username) = lower(?)
   `).get(username);
 }
 
-export function findUserByEmail(email) {
+export async function findUserByEmail(email) {
   return db.prepare(`
     SELECT * FROM users
     WHERE lower(email) = lower(?)
   `).get(email);
 }
 
-export function findUserById(id) {
+export async function findUserById(id) {
   return db.prepare(`
     SELECT id, username, email, email_verified, display_name, avatar_color, created_at
     FROM users
@@ -132,7 +283,7 @@ export function findUserById(id) {
   `).get(id);
 }
 
-export function getAllUsersExcept(userId) {
+export async function getAllUsersExcept(userId) {
   return db.prepare(`
     SELECT id, username, display_name, avatar_color
     FROM users
@@ -141,7 +292,7 @@ export function getAllUsersExcept(userId) {
   `).all(userId);
 }
 
-export function getAdminUsers() {
+export async function getAdminUsers() {
   return db.prepare(`
     SELECT
       u.id,
@@ -161,24 +312,20 @@ export function getAdminUsers() {
   `).all();
 }
 
-export function deleteUserById(userId) {
-  const transaction = db.transaction(() => {
-    db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?").run(userId);
-    db.prepare("DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?").run(userId, userId);
-    db.prepare("DELETE FROM users WHERE id = ?").run(userId);
-  });
-
-  transaction();
+export async function deleteUserById(userId) {
+  await db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?").run(userId);
+  await db.prepare("DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?").run(userId, userId);
+  await db.prepare("DELETE FROM users WHERE id = ?").run(userId);
 }
 
-export function saveEmailVerificationCode(email, codeHash, expiresAt) {
-  db.prepare(`
+export async function saveEmailVerificationCode(email, codeHash, expiresAt) {
+  await db.prepare(`
     INSERT INTO email_verification_codes (email, code_hash, expires_at)
     VALUES (?, ?, ?)
   `).run(email, codeHash, expiresAt);
 }
 
-export function getLatestEmailVerificationCode(email) {
+export async function getLatestEmailVerificationCode(email) {
   return db.prepare(`
     SELECT *
     FROM email_verification_codes
@@ -189,22 +336,22 @@ export function getLatestEmailVerificationCode(email) {
   `).get(email);
 }
 
-export function markEmailVerificationCodeUsed(id) {
-  db.prepare(`
+export async function markEmailVerificationCodeUsed(id) {
+  await db.prepare(`
     UPDATE email_verification_codes
     SET used_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(id);
 }
 
-export function createInviteCode(code, createdBy) {
+export async function createInviteCode(code, createdBy) {
   return db.prepare(`
     INSERT INTO invite_codes (code, created_by)
     VALUES (?, ?)
   `).run(code, createdBy);
 }
 
-export function getInviteCodes() {
+export async function getInviteCodes() {
   return db.prepare(`
     SELECT
       invite_codes.id,
@@ -221,7 +368,7 @@ export function getInviteCodes() {
   `).all();
 }
 
-export function findUnusedInviteCode(code) {
+export async function findUnusedInviteCode(code) {
   return db.prepare(`
     SELECT *
     FROM invite_codes
@@ -231,16 +378,16 @@ export function findUnusedInviteCode(code) {
   `).get(code);
 }
 
-export function markInviteCodeUsed(id, usedBy) {
-  db.prepare(`
+export async function markInviteCodeUsed(id, usedBy) {
+  await db.prepare(`
     UPDATE invite_codes
     SET used_by = ?, used_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(usedBy, id);
 }
 
-export function updateUserProfile(userId, profile) {
-  db.prepare(`
+export async function updateUserProfile(userId, profile) {
+  await db.prepare(`
     UPDATE users
     SET display_name = ?, avatar_color = ?
     WHERE id = ?
@@ -249,8 +396,8 @@ export function updateUserProfile(userId, profile) {
   return findUserById(userId);
 }
 
-export function saveMessage(senderId, receiverId, content) {
-  const result = db.prepare(`
+export async function saveMessage(senderId, receiverId, content) {
+  const result = await db.prepare(`
     INSERT INTO messages (sender_id, receiver_id, content)
     VALUES (?, ?, ?)
   `).run(senderId, receiverId, content);
@@ -258,7 +405,7 @@ export function saveMessage(senderId, receiverId, content) {
   return getMessageById(result.lastInsertRowid);
 }
 
-export function getMessageById(id) {
+export async function getMessageById(id) {
   return db.prepare(`
     SELECT
       m.id,
@@ -275,7 +422,7 @@ export function getMessageById(id) {
   `).get(id);
 }
 
-export function getConversation(userA, userB) {
+export async function getConversation(userA, userB) {
   return db.prepare(`
     SELECT
       m.id,
@@ -296,10 +443,10 @@ export function getConversation(userA, userB) {
   `).all(userA, userB, userB, userA);
 }
 
-export function savePushSubscription(userId, subscription) {
+export async function savePushSubscription(userId, subscription) {
   const subscriptionJson = JSON.stringify(subscription);
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO push_subscriptions (user_id, endpoint, subscription_json)
     VALUES (?, ?, ?)
     ON CONFLICT(endpoint) DO UPDATE SET
@@ -308,19 +455,21 @@ export function savePushSubscription(userId, subscription) {
   `).run(userId, subscription.endpoint, subscriptionJson);
 }
 
-export function getPushSubscriptionsForUser(userId) {
-  return db.prepare(`
+export async function getPushSubscriptionsForUser(userId) {
+  const rows = await db.prepare(`
     SELECT id, subscription_json
     FROM push_subscriptions
     WHERE user_id = ?
-  `).all(userId).map((row) => ({
+  `).all(userId);
+
+  return rows.map((row) => ({
     id: row.id,
     subscription: JSON.parse(row.subscription_json)
   }));
 }
 
-export function deletePushSubscription(id) {
-  db.prepare(`
+export async function deletePushSubscription(id) {
+  await db.prepare(`
     DELETE FROM push_subscriptions
     WHERE id = ?
   `).run(id);
