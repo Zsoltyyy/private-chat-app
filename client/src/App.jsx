@@ -148,6 +148,9 @@ export default function App() {
       setUser(updatedUser);
 
       if (updatedUser.is_admin) {
+        if (settingsOpen) {
+          setSettingsTab("admin");
+        }
         await loadAdminStatus();
       } else {
         setAdminStatus(null);
@@ -165,7 +168,7 @@ export default function App() {
         [senderId]: isTyping
       }));
     });
-    activeSocket.on("message:new", (message) => {
+    activeSocket.on("message:new", async (message) => {
       setMessages((current) => {
         const alreadyExists = current.some((item) => item.id === message.id);
         if (alreadyExists) return current;
@@ -181,6 +184,8 @@ export default function App() {
 
         return belongsToSelectedChat ? [...current, message] : current;
       });
+
+      await loadUsers();
     });
 
     activeSocket.on("message:delivered", ({ messageId }) => {
@@ -193,7 +198,7 @@ export default function App() {
       }));
     });
 
-    activeSocket.on("message:read", ({ messageIds }) => {
+    activeSocket.on("message:read", async ({ messageIds }) => {
       setMessages((current) => current.map((message) => {
         if (!messageIds?.includes(message.id)) return message;
         return {
@@ -202,6 +207,8 @@ export default function App() {
           delivered_at: message.delivered_at || new Date().toISOString()
         };
       }));
+
+      await loadUsers();
     });
 
     return () => {
@@ -283,6 +290,7 @@ export default function App() {
     try {
       const data = await api(`/messages/${otherUser.id}`);
       setMessages(data.messages);
+      await loadUsers();
     } catch (error) {
       setChatError(error.message);
     }

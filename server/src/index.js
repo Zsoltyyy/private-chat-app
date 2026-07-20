@@ -34,6 +34,7 @@ import {
   updateUserProfile,
   setUserAdminStatus,
   markMessageDeliveredById,
+  getUnreadMessageIdsForConversation,
   markMessagesReadForConversation
 } from "./db.js";
 import { authMiddleware, signToken, verifyToken } from "./auth.js";
@@ -411,6 +412,7 @@ app.get("/messages/:userId", authMiddleware, async (req, res) => {
       conversationWith: req.user.id,
       messageIds
     });
+    emitUsersChanged();
   }
 
   res.json({ messages: await getConversation(req.user.id, otherUserId) });
@@ -605,6 +607,7 @@ io.on("connection", (socket) => {
 
       io.to(`user:${receiverId}`).emit("message:new", message);
       socket.emit("message:new", message);
+      emitUsersChanged();
       sendPushToUser(receiverId, {
         title: sender?.display_name || sender?.username || "Privát Chat",
         body: "Új titkosított üzeneted érkezett.",

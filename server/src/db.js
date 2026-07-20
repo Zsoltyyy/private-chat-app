@@ -556,6 +556,15 @@ export async function markMessagesDeliveredForConversation(receiverId, senderId)
   `).run(senderId, receiverId);
 }
 
+export async function getUnreadMessageIdsForConversation(senderId, receiverId) {
+  return db.prepare(`
+    SELECT id
+    FROM messages
+    WHERE sender_id = ? AND receiver_id = ? AND read_at IS NULL
+    ORDER BY created_at ASC, id ASC
+  `).all(senderId, receiverId).then((rows) => rows.map((row) => row.id));
+}
+
 export async function markMessagesReadForConversation(receiverId, senderId) {
   return db.prepare(`
     UPDATE messages
