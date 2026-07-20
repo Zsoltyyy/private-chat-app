@@ -500,8 +500,13 @@ app.patch("/admin/users/:userId/role", authMiddleware, async (req, res) => {
   }
 
   const updatedUser = await setUserAdminStatus(userId, isAdminValue);
+  const safeUser = toSafeUser(updatedUser);
 
-  res.json({ ok: true, user: updatedUser, users: await getAdminUsers() });
+  io.to(`user:${userId}`).emit("user:updated", safeUser);
+  io.emit("users:changed");
+  io.emit("admin:updated");
+
+  res.json({ ok: true, user: safeUser, users: await getAdminUsers() });
 });
 
 app.delete("/admin/users/:userId", authMiddleware, async (req, res) => {
@@ -633,6 +638,27 @@ io.on("connection", (socket) => {
     } catch (error) {
       console.error("Deliver ack error:", error);
       callback?.({ ok: false, error: "Nem sikerült kézbesítést jelölni." });
+    }
+  });
+
+  socket.on("message:typing", (payload, callback) => {
+    try {
+      const receiverId = Number(payload?.receiverId);
+      const isTyping = Boolean(payload?.isTyping);
+
+      if (!receiverId || receiverId === userId) {
+        return callback?.({ ok: false, error: "Érvénytelen címzett." });
+      }
+
+      io.to(`user:${receiverId}`).emit("message:typing", {
+        senderId: userId,
+        isTyping
+      });
+
+      callback?.({ ok: true });
+    } catch (error) {
+      console.error("Typing event error:", error);
+      callback?.({ ok: false, error: "Nem sikerült a gépelés állapotát frissíteni." });
     }
   });
 

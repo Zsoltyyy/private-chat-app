@@ -88,6 +88,8 @@ export default function App() {
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [pushStatus, setPushStatus] = useState("");
   const [adminStatus, setAdminStatus] = useState(null);
+  const [typingUsers, setTypingUsers] = useState({});
+  const [typing, setTyping] = useState(false);
   const [profileForm, setProfileForm] = useState({
     displayName: user?.display_name || "",
     avatarColor: user?.avatar_color || AVATAR_COLORS[0]
@@ -95,6 +97,7 @@ export default function App() {
   const [chatError, setChatError] = useState("");
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
   const selectedUserRef = useRef(null);
 
   const selectedUserIsOnline = useMemo(() => {
@@ -139,7 +142,29 @@ export default function App() {
         avatarColor: updatedUser.avatar_color || AVATAR_COLORS[0]
       });
     });
+    activeSocket.on("user:updated", async (updatedUser) => {
+      if (!updatedUser || updatedUser.id !== user.id) return;
+      updateStoredUser(updatedUser);
+      setUser(updatedUser);
+
+      if (updatedUser.is_admin) {
+        await loadAdminStatus();
+      } else {
+        setAdminStatus(null);
+      }
+    });
+    activeSocket.on("admin:updated", () => {
+      if (user?.is_admin) {
+        loadAdminStatus();
+      }
+    });
     activeSocket.on("account:deleted", handleLogout);
+    activeSocket.on("message:typing", ({ senderId, isTyping }) => {
+      setTypingUsers((current) => ({
+        ...current,
+        [senderId]: isTyping
+      }));
+    });
     activeSocket.on("message:new", (message) => {
       setMessages((current) => {
         const alreadyExists = current.some((item) => item.id === message.id);
@@ -183,7 +208,10 @@ export default function App() {
       activeSocket.off("users:online");
       activeSocket.off("users:changed", loadUsers);
       activeSocket.off("profile:updated");
+      activeSocket.off("user:updated");
+      activeSocket.off("admin:updated");
       activeSocket.off("account:deleted", handleLogout);
+      activeSocket.off("message:typing");
       activeSocket.off("message:new");
       activeSocket.off("message:delivered");
       activeSocket.off("message:read");
@@ -248,6 +276,7 @@ export default function App() {
   }
 
   async function loadConversation(otherUser) {
+    stopTyping();
     setSelectedUser(otherUser);
     setChatError("");
 
@@ -257,6 +286,32 @@ export default function App() {
     } catch (error) {
       setChatError(error.message);
     }
+  }
+
+  function stopTyping() {
+    if (!socket || !selectedUser) return;
+    socket.emit("message:typing", { receiverId: selectedUser.id, isTyping: false });
+    setTyping(false);
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+  }
+
+  function startTyping() {
+    if (!socket || !selectedUser) return;
+    if (!typing) {
+      socket.emit("message:typing", { receiverId: selectedUser.id, isTyping: true });
+      setTyping(true);
+    }
+
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+
+    typingTimeoutRef.current = setTimeout(() => {
+      stopTyping();
+    }, 1500);
   }
 
   async function requestVerificationCode() {
@@ -430,6 +485,7 @@ export default function App() {
     await sendEncryptedContent(text);
     setMessageText("");
     setEmojiOpen(false);
+    stopTyping();
   }
 
   async function sendImage(event) {
@@ -563,6 +619,7 @@ export default function App() {
               <div className="chat-title">
                 <h1>{displayName(selectedUser)}</h1>
                 <span>{selectedUserIsOnline ? "Online most" : "Most offline"} · E2EE</span>
+                {(typingUsers[selectedUser.id]) && <small className="typing-indicator">Gépel...</small>}
               </div>
               <button className="icon-button" type="button" aria-label="Hívás">☎</button>
               <button className="icon-button" onClick={() => setSettingsOpen(true)} type="button" aria-label="Menü">⋮</button>
@@ -601,7 +658,7 @@ export default function App() {
               )}
               <div className="composer-input">
                 <button type="button" onClick={() => setEmojiOpen((value) => !value)} aria-label="Emoji">☺</button>
-                <input value={messageText} onChange={(event) => setMessageText(event.target.value)} placeholder={chatSecret ? "Üzenet" : "Add meg a kulcsot a Beállításokban"} maxLength={2000} />
+                <input value={messageText} onChange={(event) => { setMessageText(event.target.value); startTyping(); }} placeholder={chatSecret ? "Üzenet" : "Add meg a kulcsot a Beállításokban"} maxLength={2000} />
                 <button type="button" onClick={() => fileInputRef.current?.click()} aria-label="Kép küldése">＋</button>
                 <input ref={fileInputRef} className="hidden-file" type="file" accept="image/*" onChange={sendImage} />
               </div>
