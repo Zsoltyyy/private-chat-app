@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import { findUserById } from "./db.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_this";
 
@@ -20,7 +21,7 @@ export function verifyToken(token) {
   return jwt.verify(token, JWT_SECRET);
 }
 
-export function authMiddleware(req, res, next) {
+export async function authMiddleware(req, res, next) {
   const header = req.headers.authorization;
 
   if (!header) {
@@ -34,7 +35,18 @@ export function authMiddleware(req, res, next) {
   }
 
   try {
-    req.user = verifyToken(token);
+    const payload = verifyToken(token);
+    const user = await findUserById(payload.id);
+
+    if (!user) {
+      return res.status(401).json({ error: "Érvénytelen vagy lejárt token." });
+    }
+
+    req.user = {
+      ...payload,
+      ...user,
+      is_admin: Boolean(user.is_admin)
+    };
     next();
   } catch {
     return res.status(401).json({ error: "Érvénytelen vagy lejárt token." });

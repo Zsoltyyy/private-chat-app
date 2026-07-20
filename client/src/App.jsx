@@ -99,6 +99,7 @@ export default function App() {
   const fileInputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const selectedUserRef = useRef(null);
+  const decryptedMessageIdsRef = useRef(new Set());
 
   const selectedUserIsOnline = useMemo(() => {
     if (!selectedUser) return false;
@@ -169,18 +170,14 @@ export default function App() {
       }));
     });
     activeSocket.on("message:new", async (message) => {
+      const activeChat = selectedUserRef.current;
+      const belongsToSelectedChat =
+        activeChat &&
+        (message.sender_id === activeChat.id || message.receiver_id === activeChat.id);
+
       setMessages((current) => {
         const alreadyExists = current.some((item) => item.id === message.id);
         if (alreadyExists) return current;
-
-        const activeChat = selectedUserRef.current;
-        const belongsToSelectedChat =
-          activeChat &&
-          (message.sender_id === activeChat.id || message.receiver_id === activeChat.id);
-
-        if (belongsToSelectedChat && message.sender_id === activeChat.id && message.receiver_id === user.id) {
-          activeSocket.emit("message:delivered", { messageId: message.id, senderId: message.sender_id }, () => {});
-        }
 
         if (!belongsToSelectedChat && message.sender_id !== user.id) {
           adjustUnreadCount(message.sender_id, 1);
@@ -188,8 +185,6 @@ export default function App() {
 
         return belongsToSelectedChat ? [...current, message] : current;
       });
-
-      await loadUsers();
     });
 
     activeSocket.on("message:delivered", ({ messageId }) => {
@@ -235,16 +230,25 @@ export default function App() {
   }, [decryptedMessages]);
 
   useEffect(() => {
+    decryptedMessageIdsRef.current.clear();
+    setDecryptedMessages([]);
+  }, [selectedUser?.id, chatSecret, user?.id]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function decryptVisibleMessages() {
       if (!selectedUser || !user) {
+        decryptedMessageIdsRef.current.clear();
         setDecryptedMessages([]);
         return;
       }
 
+      const messagesToDecrypt = messages.filter((message) => !decryptedMessageIdsRef.current.has(message.id));
+      if (messagesToDecrypt.length === 0) return;
+
       const items = await Promise.all(
-        messages.map(async (message) => {
+        messagesToDecrypt.map(async (message) => {
           try {
             const content = chatSecret
               ? await decryptMessage(message.content, chatSecret, user.id, selectedUser.id)
@@ -262,7 +266,13 @@ export default function App() {
         })
       );
 
-      if (!cancelled) setDecryptedMessages(items);
+      if (cancelled) return;
+
+      decryptedMessageIdsRef.current = new Set([
+        ...Array.from(decryptedMessageIdsRef.current),
+        ...messagesToDecrypt.map((message) => message.id)
+      ]);
+      setDecryptedMessages((current) => [...current, ...items]);
     }
 
     decryptVisibleMessages();
@@ -303,6 +313,8 @@ export default function App() {
 
     try {
       const data = await api(`/messages/${otherUser.id}`);
+      decryptedMessageIdsRef.current.clear();
+      setDecryptedMessages([]);
       setMessages(data.messages);
       await loadUsers();
     } catch (error) {
