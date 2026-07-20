@@ -932,7 +932,7 @@ input:focus {
   white-space: nowrap;
 }
 
-..admin-user button {
+.admin-user button {
   color: #fecaca;
 }
 
