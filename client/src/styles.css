@@ -421,6 +421,27 @@ input:focus {
   white-space: nowrap;
 }
 
+.conversation-badge {
+  margin-left: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--blue);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.message-status {
+  display: inline-block;
+  margin-left: 8px;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 12px;
+}
+
 .chat-screen {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto;
@@ -911,8 +932,26 @@ input:focus {
   white-space: nowrap;
 }
 
-.admin-user button {
+..admin-user button {
   color: #fecaca;
+}
+
+.admin-actions-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.admin-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--blue);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .admin-user.invite-code button {

@@ -102,6 +102,13 @@ export default function App() {
     return onlineUserIds.includes(selectedUser.id);
   }, [onlineUserIds, selectedUser]);
 
+  const messageStatusText = (message) => {
+    if (message.sender_id !== user.id) return "";
+    if (message.read_at) return "✓✓";
+    if (message.delivered_at) return "✓";
+    return "…";
+  };
+
   useEffect(() => {
     selectedUserRef.current = selectedUser;
   }, [selectedUser]);
@@ -143,8 +150,33 @@ export default function App() {
           activeChat &&
           (message.sender_id === activeChat.id || message.receiver_id === activeChat.id);
 
+        if (belongsToSelectedChat && message.sender_id === activeChat.id && message.receiver_id === user.id) {
+          activeSocket.emit("message:delivered", { messageId: message.id, senderId: message.sender_id }, () => {});
+        }
+
         return belongsToSelectedChat ? [...current, message] : current;
       });
+    });
+
+    activeSocket.on("message:delivered", ({ messageId }) => {
+      setMessages((current) => current.map((message) => {
+        if (message.id !== messageId) return message;
+        return {
+          ...message,
+          delivered_at: message.delivered_at || new Date().toISOString()
+        };
+      }));
+    });
+
+    activeSocket.on("message:read", ({ messageIds }) => {
+      setMessages((current) => current.map((message) => {
+        if (!messageIds?.includes(message.id)) return message;
+        return {
+          ...message,
+          read_at: message.read_at || new Date().toISOString(),
+          delivered_at: message.delivered_at || new Date().toISOString()
+        };
+      }));
     });
 
     return () => {
@@ -153,6 +185,8 @@ export default function App() {
       activeSocket.off("profile:updated");
       activeSocket.off("account:deleted", handleLogout);
       activeSocket.off("message:new");
+      activeSocket.off("message:delivered");
+      activeSocket.off("message:read");
       disconnectSocket();
     };
   }, [user]);
@@ -336,6 +370,27 @@ export default function App() {
     }
   }
 
+  async function toggleAdminRole(userId, isAdmin) {
+    try {
+      await api(`/admin/users/${userId}/role`, {
+        method: "PATCH",
+        body: JSON.stringify({ isAdmin })
+      });
+      await loadAdminStatus();
+    } catch (error) {
+      setChatError(error.message);
+    }
+  }
+
+  async function deleteInviteCode(codeId) {
+    try {
+      await api(`/admin/invite-codes/${codeId}`, { method: "DELETE" });
+      await loadAdminStatus();
+    } catch (error) {
+      setChatError(error.message);
+    }
+  }
+
   async function createAdminInviteCode() {
     try {
       const data = await api("/admin/invite-codes", { method: "POST" });
@@ -481,7 +536,7 @@ export default function App() {
                   <span className={online ? "presence online" : "presence"} />
                 </span>
                 <span className="conversation-copy">
-                  <strong>{displayName(item)}</strong>
+                  <strong>{displayName(item)}{item.unread_count > 0 && <span className="conversation-badge">+{item.unread_count}</span>}</strong>
                   <small>{online ? "Online" : "Offline"} · titkosított chat</small>
                 </span>
               </button>
@@ -526,6 +581,7 @@ export default function App() {
                         <p>{message.parsedContent?.text || message.decryptedContent}</p>
                       )}
                       <time>{formatMessageTime(message.created_at)}</time>
+                      {mine && <span className="message-status">{messageStatusText(message)}</span>}
                     </div>
                   </div>
                 );
@@ -566,7 +622,7 @@ export default function App() {
             <div className="settings-tabs">
               <button className={settingsTab === "profile" ? "active" : ""} type="button" onClick={() => setSettingsTab("profile")}>Profil</button>
               <button className={settingsTab === "security" ? "active" : ""} type="button" onClick={() => setSettingsTab("security")}>Titkosítás</button>
-              {user.username === "ZsoltY" && (
+              {user.is_admin && (
                 <button className={settingsTab === "admin" ? "active" : ""} type="button" onClick={() => { setSettingsTab("admin"); loadAdminStatus(); }}>Admin</button>
               )}
             </div>
@@ -608,7 +664,7 @@ export default function App() {
               </form>
             )}
 
-            {settingsTab === "admin" && user.username === "ZsoltY" && (
+            {settingsTab === "admin" && user.is_admin && (
               <div className="settings-panel compact-panel">
                 <div className="admin-card">
                   <strong>Fejlesztői panel</strong>
@@ -631,7 +687,10 @@ export default function App() {
                             <strong>{item.code}</strong>
                             <small>{item.used_at ? `Felhasználta: ${item.used_by_username || "ismeretlen"}` : "Szabad meghívókód"}</small>
                           </span>
-                          <button type="button" onClick={() => navigator.clipboard?.writeText(item.code)}>Másolás</button>
+                          <div className="admin-actions-row">
+                            <button type="button" onClick={() => navigator.clipboard?.writeText(item.code)}>Másolás</button>
+                            <button type="button" onClick={() => deleteInviteCode(item.id)}>Törlés</button>
+                          </div>
                         </div>
                       ))}
                       {(adminStatus.inviteCodes || []).length === 0 && (
@@ -642,10 +701,15 @@ export default function App() {
                       {adminStatus.users.map((item) => (
                         <div className="admin-user" key={item.id}>
                           <span>
-                            <strong>{item.display_name || item.username}</strong>
+                            <strong>{item.display_name || item.username} {item.is_admin && <small className="admin-badge">Admin</small>}</strong>
                             <small>{item.email || "nincs email"} · {item.message_count} üzenet</small>
                           </span>
-                          <button type="button" disabled={item.username === "ZsoltY"} onClick={() => deleteAdminUser(item.id)}>Törlés</button>
+                          <div className="admin-actions-row">
+                            <button type="button" disabled={item.username === user.username} onClick={() => toggleAdminRole(item.id, !item.is_admin)}>
+                              {item.is_admin ? "Admin visszavonása" : "Admin jogosultság"}
+                            </button>
+                            <button type="button" disabled={item.username === user.username} onClick={() => deleteAdminUser(item.id)}>Törlés</button>
+                          </div>
                         </div>
                       ))}
                     </div>

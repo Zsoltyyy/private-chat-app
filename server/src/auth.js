@@ -6,7 +6,8 @@ export function signToken(user) {
   return jwt.sign(
     {
       id: user.id,
-      username: user.username
+      username: user.username,
+      is_admin: Boolean(user.is_admin)
     },
     JWT_SECRET,
     {

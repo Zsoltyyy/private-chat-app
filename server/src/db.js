@@ -88,6 +88,8 @@ function initializeSqliteSchema() {
       sender_id INTEGER NOT NULL,
       receiver_id INTEGER NOT NULL,
       content TEXT NOT NULL,
+      delivered_at TEXT,
+      read_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(sender_id) REFERENCES users(id),
       FOREIGN KEY(receiver_id) REFERENCES users(id)
@@ -128,6 +130,10 @@ function initializeSqliteSchema() {
 
   const userColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
 
+  if (!userColumns.includes("is_admin")) {
+    db.prepare("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0").run();
+  }
+
   if (!userColumns.includes("display_name")) {
     db.prepare("ALTER TABLE users ADD COLUMN display_name TEXT").run();
   }
@@ -142,6 +148,16 @@ function initializeSqliteSchema() {
 
   if (!userColumns.includes("avatar_color")) {
     db.prepare("ALTER TABLE users ADD COLUMN avatar_color TEXT NOT NULL DEFAULT '#3466f6'").run();
+  }
+
+  const messageColumns = db.prepare("PRAGMA table_info(messages)").all().map((column) => column.name);
+
+  if (!messageColumns.includes("delivered_at")) {
+    db.prepare("ALTER TABLE messages ADD COLUMN delivered_at TEXT").run();
+  }
+
+  if (!messageColumns.includes("read_at")) {
+    db.prepare("ALTER TABLE messages ADD COLUMN read_at TEXT").run();
   }
 
   db.exec(`
@@ -218,6 +234,10 @@ async function initializePostgresSchema() {
 
   const userColumns = (rows || []).map((column) => column.column_name);
 
+  if (!userColumns.includes("is_admin")) {
+    await db.prepare("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0").run();
+  }
+
   if (!userColumns.includes("display_name")) {
     await db.prepare("ALTER TABLE users ADD COLUMN display_name TEXT").run();
   }
@@ -234,6 +254,22 @@ async function initializePostgresSchema() {
     await db.prepare("ALTER TABLE users ADD COLUMN avatar_color TEXT NOT NULL DEFAULT '#3466f6'").run();
   }
 
+  const messageRows = await db.prepare(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'messages'
+  `).all();
+
+  const messageColumns = (messageRows || []).map((column) => column.column_name);
+
+  if (!messageColumns.includes("delivered_at")) {
+    await db.prepare("ALTER TABLE messages ADD COLUMN delivered_at TIMESTAMPTZ").run();
+  }
+
+  if (!messageColumns.includes("read_at")) {
+    await db.prepare("ALTER TABLE messages ADD COLUMN read_at TIMESTAMPTZ").run();
+  }
+
   await db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
     ON users(lower(email))
@@ -247,11 +283,11 @@ if (db.kind === "postgres") {
   initializeSqliteSchema();
 }
 
-export async function createUser(username, passwordHash, email = null) {
+export async function createUser(username, passwordHash, email = null, isAdmin = 0) {
   return db.prepare(`
-    INSERT INTO users (username, email, email_verified, password_hash)
-    VALUES (?, ?, ?, ?)
-  `).run(username, email, email ? 1 : 1, passwordHash);
+    INSERT INTO users (username, email, email_verified, password_hash, is_admin)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(username, email, email ? 1 : 1, passwordHash, isAdmin ? 1 : 0);
 }
 
 export async function upsertAdminUser(username, passwordHash, email = null) {
@@ -262,14 +298,15 @@ export async function upsertAdminUser(username, passwordHash, email = null) {
       UPDATE users
       SET password_hash = ?,
           email = coalesce(email, ?),
-          email_verified = 1
+          email_verified = 1,
+          is_admin = 1
       WHERE id = ?
     `).run(passwordHash, email, existing.id);
 
     return findUserByUsername(username);
   }
 
-  await createUser(username, passwordHash, email);
+  await createUser(username, passwordHash, email || null, 1);
   return findUserByUsername(username);
 }
 
@@ -289,7 +326,7 @@ export async function findUserByEmail(email) {
 
 export async function findUserById(id) {
   return db.prepare(`
-    SELECT id, username, email, email_verified, display_name, avatar_color, created_at
+    SELECT id, username, email, email_verified, display_name, avatar_color, created_at, is_admin
     FROM users
     WHERE id = ?
   `).get(id);
@@ -297,11 +334,23 @@ export async function findUserById(id) {
 
 export async function getAllUsersExcept(userId) {
   return db.prepare(`
-    SELECT id, username, display_name, avatar_color
-    FROM users
-    WHERE id != ?
-    ORDER BY coalesce(display_name, username) ASC
-  `).all(userId);
+    SELECT
+      u.id,
+      u.username,
+      u.display_name,
+      u.avatar_color,
+      u.is_admin,
+      (
+        SELECT count(*)
+        FROM messages m
+        WHERE m.sender_id = u.id
+          AND m.receiver_id = ?
+          AND m.read_at IS NULL
+      ) AS unread_count
+    FROM users u
+    WHERE u.id != ?
+    ORDER BY coalesce(u.display_name, u.username) ASC
+  `).all(userId, userId);
 }
 
 export async function getAdminUsers() {
@@ -314,6 +363,7 @@ export async function getAdminUsers() {
       u.display_name,
       u.avatar_color,
       u.created_at,
+      u.is_admin,
       (
         SELECT count(*)
         FROM messages m
@@ -437,6 +487,16 @@ export async function updateUserProfile(userId, profile) {
   return findUserById(userId);
 }
 
+export async function setUserAdminStatus(userId, isAdmin) {
+  await db.prepare(`
+    UPDATE users
+    SET is_admin = ?
+    WHERE id = ?
+  `).run(isAdmin ? 1 : 0, userId);
+
+  return findUserById(userId);
+}
+
 export async function saveMessage(senderId, receiverId, content) {
   const result = await db.prepare(`
     INSERT INTO messages (sender_id, receiver_id, content)
@@ -455,6 +515,8 @@ export async function getMessageById(id) {
       m.receiver_id,
       receiver.username AS receiver_username,
       m.content,
+      m.delivered_at,
+      m.read_at,
       m.created_at
     FROM messages m
     JOIN users sender ON sender.id = m.sender_id
@@ -472,6 +534,8 @@ export async function getConversation(userA, userB) {
       m.receiver_id,
       receiver.username AS receiver_username,
       m.content,
+      m.delivered_at,
+      m.read_at,
       m.created_at
     FROM messages m
     JOIN users sender ON sender.id = m.sender_id
@@ -482,6 +546,32 @@ export async function getConversation(userA, userB) {
       (m.sender_id = ? AND m.receiver_id = ?)
     ORDER BY m.created_at ASC, m.id ASC
   `).all(userA, userB, userB, userA);
+}
+
+export async function markMessagesDeliveredForConversation(receiverId, senderId) {
+  return db.prepare(`
+    UPDATE messages
+    SET delivered_at = CURRENT_TIMESTAMP
+    WHERE sender_id = ? AND receiver_id = ? AND delivered_at IS NULL
+  `).run(senderId, receiverId);
+}
+
+export async function markMessagesReadForConversation(receiverId, senderId) {
+  return db.prepare(`
+    UPDATE messages
+    SET
+      read_at = CURRENT_TIMESTAMP,
+      delivered_at = COALESCE(delivered_at, CURRENT_TIMESTAMP)
+    WHERE sender_id = ? AND receiver_id = ? AND read_at IS NULL
+  `).run(senderId, receiverId);
+}
+
+export async function markMessageDeliveredById(messageId, receiverId) {
+  return db.prepare(`
+    UPDATE messages
+    SET delivered_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND receiver_id = ? AND delivered_at IS NULL
+  `).run(messageId, receiverId);
 }
 
 export async function savePushSubscription(userId, subscription) {

@@ -9,6 +9,7 @@ import webpush from "web-push";
 import { fileURLToPath } from "url";
 import { Server } from "socket.io";
 import {
+  db,
   createUser,
   createInviteCode,
   deletePushSubscription,
@@ -30,7 +31,10 @@ import {
   saveMessage,
   savePushSubscription,
   upsertAdminUser,
-  updateUserProfile
+  updateUserProfile,
+  setUserAdminStatus,
+  markMessageDeliveredById,
+  markMessagesReadForConversation
 } from "./db.js";
 import { authMiddleware, signToken, verifyToken } from "./auth.js";
 
@@ -110,7 +114,7 @@ function createInviteCodeValue() {
 }
 
 function isAdmin(user) {
-  return user?.username === "ZsoltY";
+  return Boolean(user?.is_admin);
 }
 
 function validateCredentials(username, password) {
@@ -136,7 +140,8 @@ function toSafeUser(user) {
     email: user.email,
     email_verified: user.email_verified,
     display_name: user.display_name,
-    avatar_color: user.avatar_color
+    avatar_color: user.avatar_color,
+    is_admin: Boolean(user.is_admin)
   };
 }
 
@@ -391,6 +396,23 @@ app.get("/messages/:userId", authMiddleware, async (req, res) => {
     return res.status(404).json({ error: "A címzett nem található." });
   }
 
+  const unreadMessages = await db.prepare(`
+    SELECT id
+    FROM messages
+    WHERE sender_id = ?
+      AND receiver_id = ?
+      AND read_at IS NULL
+  `).all(otherUserId, req.user.id);
+
+  if (unreadMessages.length > 0) {
+    const messageIds = unreadMessages.map((row) => row.id);
+    await markMessagesReadForConversation(req.user.id, otherUserId);
+    io.to(`user:${otherUserId}`).emit("message:read", {
+      conversationWith: req.user.id,
+      messageIds
+    });
+  }
+
   res.json({ messages: await getConversation(req.user.id, otherUserId) });
 });
 
@@ -453,6 +475,33 @@ app.delete("/admin/invite-codes/:id", authMiddleware, async (req, res) => {
   await deleteInviteCodeById(id);
 
   res.json({ ok: true, inviteCodes: await getInviteCodes() });
+});
+
+app.patch("/admin/users/:userId/role", authMiddleware, async (req, res) => {
+  if (!isAdmin(req.user)) {
+    return res.status(403).json({ error: "Nincs jogosultság." });
+  }
+
+  const userId = Number(req.params.userId);
+  const isAdminValue = req.body?.isAdmin;
+
+  if (!userId || typeof isAdminValue !== "boolean") {
+    return res.status(400).json({ error: "Érvénytelen kérés." });
+  }
+
+  if (userId === req.user.id && !isAdminValue) {
+    return res.status(400).json({ error: "Saját jogosultságodat nem vonhatod vissza." });
+  }
+
+  const user = await findUserById(userId);
+
+  if (!user) {
+    return res.status(404).json({ error: "Felhasználó nem található." });
+  }
+
+  const updatedUser = await setUserAdminStatus(userId, isAdminValue);
+
+  res.json({ ok: true, user: updatedUser, users: await getAdminUsers() });
 });
 
 app.delete("/admin/users/:userId", authMiddleware, async (req, res) => {
@@ -561,6 +610,29 @@ io.on("connection", (socket) => {
     } catch (error) {
       console.error("Message error:", error);
       callback?.({ ok: false, error: "Nem sikerült elküldeni az üzenetet." });
+    }
+  });
+
+  socket.on("message:delivered", async (payload, callback) => {
+    try {
+      const messageId = Number(payload?.messageId);
+
+      if (!messageId) {
+        return callback?.({ ok: false, error: "Érvénytelen üzenet." });
+      }
+
+      const result = await markMessageDeliveredById(messageId, userId);
+
+      if (result.changes > 0) {
+        io.to(`user:${payload.senderId}`).emit("message:delivered", {
+          messageId
+        });
+      }
+
+      callback?.({ ok: true });
+    } catch (error) {
+      console.error("Deliver ack error:", error);
+      callback?.({ ok: false, error: "Nem sikerült kézbesítést jelölni." });
     }
   });
 
