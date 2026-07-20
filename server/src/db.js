@@ -41,7 +41,10 @@ function createPostgresConnection() {
 }
 
 function executePostgresStatement(pool, statementSql, params) {
-  const normalizedSql = statementSql.trim();
+  // convert `?` placeholders to $1, $2... for pg
+  let index = 0;
+  const converted = statementSql.replace(/\?/g, () => `\$${++index}`);
+  const normalizedSql = converted.trim();
   const shouldReturnId = /\binsert\b/i.test(normalizedSql) && !/\breturning\b/i.test(normalizedSql);
   const sql = shouldReturnId ? `${normalizedSql} RETURNING id` : normalizedSql;
 
@@ -52,7 +55,11 @@ function executePostgresStatement(pool, statementSql, params) {
 }
 
 function executePostgresQuery(pool, statementSql, params, mode) {
-  return pool.query(statementSql, params).then((result) => {
+  // convert `?` placeholders to $1, $2... for pg
+  let index = 0;
+  const converted = statementSql.replace(/\?/g, () => `\$${++index}`);
+
+  return pool.query(converted, params).then((result) => {
     if (mode === "get") {
       return result.rows[0] ?? null;
     }
