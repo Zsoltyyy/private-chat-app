@@ -182,6 +182,10 @@ export default function App() {
           activeSocket.emit("message:delivered", { messageId: message.id, senderId: message.sender_id }, () => {});
         }
 
+        if (!belongsToSelectedChat && message.sender_id !== user.id) {
+          adjustUnreadCount(message.sender_id, 1);
+        }
+
         return belongsToSelectedChat ? [...current, message] : current;
       });
 
@@ -267,6 +271,16 @@ export default function App() {
       cancelled = true;
     };
   }, [messages, chatSecret, selectedUser, user]);
+
+  function adjustUnreadCount(userId, amount) {
+    setUsers((current) => current.map((item) => {
+      if (item.id !== userId) return item;
+      return {
+        ...item,
+        unread_count: Math.max(0, (item.unread_count || 0) + amount)
+      };
+    }));
+  }
 
   async function loadUsers() {
     try {
