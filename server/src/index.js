@@ -36,7 +36,10 @@ import {
   markMessageDeliveredById,
   getUnreadMessageIdsForConversation,
   markMessagesReadForConversation
+  , getConversationBackground, setConversationBackground
 } from "./db.js";
+import multer from "multer";
+import fs from "fs";
 import { authMiddleware, signToken, verifyToken } from "./auth.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -67,6 +70,24 @@ const io = new Server(server, { cors: corsOptions });
 
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "4mb" }));
+
+// serve uploaded files and prepare uploads dir
+const uploadsPath = path.resolve(__dirname, "../../uploads");
+app.use("/uploads", express.static(uploadsPath));
+try {
+  fs.mkdirSync(uploadsPath, { recursive: true });
+} catch (err) {
+  console.error("Could not create uploads directory:", err.message);
+}
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsPath),
+  filename: (req, file, cb) => {
+    const prefix = Date.now();
+    const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+    cb(null, `${prefix}-${safe}`);
+  }
+});
+const upload = multer({ storage });
 
 const onlineUsers = new Map();
 const mailTransport = process.env.SMTP_HOST
@@ -415,7 +436,52 @@ app.get("/messages/:userId", authMiddleware, async (req, res) => {
     emitUsersChanged();
   }
 
-  res.json({ messages: await getConversation(req.user.id, otherUserId) });
+  const messages = await getConversation(req.user.id, otherUserId);
+  const bg = await getConversationBackground(req.user.id, otherUserId);
+
+  res.json({ messages, background: bg?.background_url || null });
+});
+
+app.post("/uploads", authMiddleware, upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "Nincs feltöltött fájl." });
+    const urlPath = `/uploads/${req.file.filename}`;
+    res.status(201).json({ url: urlPath, name: req.file.originalname, size: req.file.size, mime: req.file.mimetype });
+  } catch (error) {
+    console.error("Upload error:", error);
+    res.status(500).json({ error: "Feltöltési hiba." });
+  }
+});
+
+app.get("/conversations/:userId/background", authMiddleware, async (req, res) => {
+  try {
+    const otherUserId = Number(req.params.userId);
+    if (!otherUserId) return res.status(400).json({ error: "Érvénytelen felhasználó." });
+    const bg = await getConversationBackground(req.user.id, otherUserId);
+    res.json({ background: bg?.background_url || null, setBy: bg?.background_set_by || null, updatedAt: bg?.updated_at || null });
+  } catch (error) {
+    console.error("Get background error:", error);
+    res.status(500).json({ error: "Nem sikerült lekérdezni a háttér beállítást." });
+  }
+});
+
+app.patch("/conversations/:userId/background", authMiddleware, async (req, res) => {
+  try {
+    const otherUserId = Number(req.params.userId);
+    const backgroundUrl = String(req.body.backgroundUrl || "").trim() || null;
+    if (!otherUserId) return res.status(400).json({ error: "Érvénytelen felhasználó." });
+    await setConversationBackground(req.user.id, otherUserId, backgroundUrl, req.user.id);
+    const bg = await getConversationBackground(req.user.id, otherUserId);
+
+    // notify participants in realtime
+    io.to(`user:${req.user.id}`).emit("conversation:background", { with: otherUserId, background: bg?.background_url || null });
+    io.to(`user:${otherUserId}`).emit("conversation:background", { with: req.user.id, background: bg?.background_url || null });
+
+    res.json({ ok: true, background: bg?.background_url || null });
+  } catch (error) {
+    console.error("Set background error:", error);
+    res.status(500).json({ error: "Nem sikerült beállítani a háttérképet." });
+  }
 });
 
 app.get("/admin/status", authMiddleware, async (req, res) => {

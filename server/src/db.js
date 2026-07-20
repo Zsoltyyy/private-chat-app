@@ -126,6 +126,19 @@ function initializeSqliteSchema() {
       FOREIGN KEY(created_by) REFERENCES users(id),
       FOREIGN KEY(used_by) REFERENCES users(id)
     );
+
+    CREATE TABLE IF NOT EXISTS conversation_settings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      participant1 INTEGER NOT NULL,
+      participant2 INTEGER NOT NULL,
+      background_url TEXT,
+      background_set_by INTEGER,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(participant1, participant2),
+      FOREIGN KEY(participant1) REFERENCES users(id),
+      FOREIGN KEY(participant2) REFERENCES users(id),
+      FOREIGN KEY(background_set_by) REFERENCES users(id)
+    );
   `);
 
   const userColumns = db.prepare("PRAGMA table_info(users)").all().map((column) => column.name);
@@ -158,6 +171,12 @@ function initializeSqliteSchema() {
 
   if (!messageColumns.includes("read_at")) {
     db.prepare("ALTER TABLE messages ADD COLUMN read_at TEXT").run();
+  }
+
+  const convoColumns = db.prepare("PRAGMA table_info(conversation_settings)").all().map((c) => c.name);
+
+  if (convoColumns.length === 0) {
+    // table was created above in exec, nothing to do
   }
 
   db.exec(`
@@ -606,6 +625,51 @@ export async function getPushSubscriptionsForUser(userId) {
     id: row.id,
     subscription: JSON.parse(row.subscription_json)
   }));
+}
+
+export async function getConversationBackground(userA, userB) {
+  const a = Number(userA);
+  const b = Number(userB);
+  if (!a || !b) return null;
+  const p1 = Math.min(a, b);
+  const p2 = Math.max(a, b);
+
+  return db.prepare(`
+    SELECT background_url, background_set_by, updated_at
+    FROM conversation_settings
+    WHERE participant1 = ? AND participant2 = ?
+    LIMIT 1
+  `).get(p1, p2);
+}
+
+export async function setConversationBackground(userA, userB, backgroundUrl, setBy) {
+  const a = Number(userA);
+  const b = Number(userB);
+  if (!a || !b) return null;
+  const p1 = Math.min(a, b);
+  const p2 = Math.max(a, b);
+
+  const exists = db.prepare(`
+    SELECT id
+    FROM conversation_settings
+    WHERE participant1 = ? AND participant2 = ?
+    LIMIT 1
+  `).get(p1, p2);
+
+  if (exists) {
+    await db.prepare(`
+      UPDATE conversation_settings
+      SET background_url = ?, background_set_by = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(backgroundUrl, setBy, exists.id);
+  } else {
+    await db.prepare(`
+      INSERT INTO conversation_settings (participant1, participant2, background_url, background_set_by)
+      VALUES (?, ?, ?, ?)
+    `).run(p1, p2, backgroundUrl, setBy);
+  }
+
+  return getConversationBackground(a, b);
 }
 
 export async function deletePushSubscription(id) {

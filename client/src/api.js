@@ -39,14 +39,24 @@ export async function api(path, options = {}) {
   let response;
 
   try {
-    response = await fetch(`${API_URL}${path}`, {
+    const isRaw = options.raw === true;
+    const headers = {
+      ...(isRaw ? {} : { "Content-Type": "application/json" }),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {})
+    };
+
+    const fetchOpts = {
       ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(options.headers || {})
-      }
-    });
+      headers
+    };
+
+    if (isRaw) {
+      // let caller provide FormData or other body; do not stringify or set content-type
+      delete fetchOpts.raw;
+    }
+
+    response = await fetch(`${API_URL}${path}`, fetchOpts);
   } catch {
     throw new Error("Nem sikerült kapcsolódni a szerverhez. Fut a backend?");
   }

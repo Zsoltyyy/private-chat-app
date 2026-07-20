@@ -41,7 +41,7 @@ function parseMessageContent(content) {
 
   try {
     const payload = JSON.parse(content);
-    if (payload.type === "image") return payload;
+    if (payload.type === "image" || payload.type === "file") return payload;
   } catch {
     return { type: "text", text: content };
   }
@@ -131,6 +131,7 @@ export default function App() {
   const fileInputRef = useRef(null);
   const profilePictureInputRef = useRef(null);
   const backgroundInputRef = useRef(null);
+  const conversationBackgroundInputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const selectedUserRef = useRef(null);
   const decryptedMessageIdsRef = useRef(new Set());
@@ -249,6 +250,14 @@ export default function App() {
       await loadUsers();
     });
 
+    activeSocket.on("conversation:background", ({ with: otherId, background }) => {
+      const sid = selectedUserRef.current;
+      if (sid && sid.id === otherId) {
+        setChatBackground(background || "");
+        setStoredChatBackground(sid.id, background || "");
+      }
+    });
+
     return () => {
       activeSocket.off("users:online");
       activeSocket.off("users:changed", loadUsers);
@@ -260,6 +269,7 @@ export default function App() {
       activeSocket.off("message:new");
       activeSocket.off("message:delivered");
       activeSocket.off("message:read");
+      activeSocket.off("conversation:background");
       disconnectSocket();
     };
   }, [user]);
@@ -355,6 +365,8 @@ export default function App() {
       decryptedMessageIdsRef.current.clear();
       setDecryptedMessages([]);
       setMessages(data.messages);
+      setChatBackground(data.background || getStoredChatBackground(otherUser.id));
+      setStoredChatBackground(otherUser.id, data.background || getStoredChatBackground(otherUser.id));
       await loadUsers();
     } catch (error) {
       setChatError(error.message);
@@ -571,19 +583,18 @@ export default function App() {
 
     if (!file) return;
 
-    if (!file.type.startsWith("image/")) {
-      setChatError("Csak képet lehet küldeni.");
-      return;
+    try {
+      const form = new FormData();
+      form.append("file", file);
+
+      // note: api helper supports raw FormData when { raw: true }
+      const resp = await api("/uploads", { method: "POST", body: form, raw: true });
+
+      const payload = { type: "file", url: resp.url, name: resp.name, mime: resp.mime, size: resp.size };
+      await sendEncryptedContent(JSON.stringify(payload));
+    } catch (err) {
+      setChatError(err.message || "Feltöltési hiba.");
     }
-
-    const dataUrl = await imageFileToDataUrl(file);
-
-    if (dataUrl.length > 2800000) {
-      setChatError("A kép túl nagy. Válassz kisebb méretű képet.");
-      return;
-    }
-
-    await sendEncryptedContent(JSON.stringify({ type: "image", dataUrl, name: file.name }));
   }
 
   if (!user) {
@@ -713,6 +724,22 @@ export default function App() {
                 {(typingUsers[selectedUser.id]) && <small className="typing-indicator">Gépel...</small>}
               </div>
               <button className="icon-button" type="button" aria-label="Hívás">☎</button>
+              <button className="icon-button" type="button" onClick={() => conversationBackgroundInputRef.current?.click()} aria-label="Háttér megváltoztatása">🖼</button>
+              <input ref={conversationBackgroundInputRef} className="hidden-file" type="file" accept="image/*,video/*" onChange={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (!file || !selectedUser) return;
+                try {
+                  const form = new FormData();
+                  form.append("file", file);
+                  const resp = await api(`/uploads`, { method: "POST", body: form, raw: true });
+                  await api(`/conversations/${selectedUser.id}/background`, { method: "PATCH", body: JSON.stringify({ backgroundUrl: resp.url }) });
+                  setChatBackground(resp.url);
+                  setStoredChatBackground(selectedUser.id, resp.url);
+                } catch (err) {
+                  setChatError(err.message || "Nem sikerült a háttér feltöltése.");
+                }
+              }} />
               <button className="icon-button" onClick={() => setSettingsOpen(true)} type="button" aria-label="Menü">⋮</button>
             </header>
 
@@ -725,6 +752,14 @@ export default function App() {
                     <div className={message.decryptFailed ? "bubble failed" : "bubble"}>
                       {message.parsedContent?.type === "image" ? (
                         <img className="message-image" src={message.parsedContent.dataUrl} alt={message.parsedContent.name || "Küldött kép"} />
+                      ) : message.parsedContent?.type === "file" ? (
+                        (message.parsedContent.mime || "").startsWith("image/") ? (
+                          <img className="message-image" src={message.parsedContent.url} alt={message.parsedContent.name || "Kép"} />
+                        ) : (message.parsedContent.mime || "").startsWith("video/") ? (
+                          <video className="message-video" controls src={message.parsedContent.url} />
+                        ) : (
+                          <p><a href={message.parsedContent.url} target="_blank" rel="noreferrer">{message.parsedContent.name || message.parsedContent.url}</a></p>
+                        )
                       ) : (
                         <p>{message.parsedContent?.text || message.decryptedContent}</p>
                       )}
@@ -750,8 +785,8 @@ export default function App() {
               <div className="composer-input">
                 <button type="button" onClick={() => setEmojiOpen((value) => !value)} aria-label="Emoji">☺</button>
                 <input value={messageText} onChange={(event) => { setMessageText(event.target.value); startTyping(); }} placeholder={chatSecret ? "Üzenet" : "Add meg a kulcsot a Beállításokban"} maxLength={2000} />
-                <button type="button" onClick={() => fileInputRef.current?.click()} aria-label="Kép küldése">＋</button>
-                <input ref={fileInputRef} className="hidden-file" type="file" accept="image/*" onChange={sendImage} />
+                <button type="button" onClick={() => fileInputRef.current?.click()} aria-label="Fájl küldése">＋</button>
+                <input ref={fileInputRef} className="hidden-file" type="file" accept="*/*" onChange={sendImage} />
               </div>
               <button className="send-button" type="submit" aria-label="Küldés">➤</button>
             </form>
