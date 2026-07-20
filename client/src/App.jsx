@@ -641,7 +641,7 @@ export default function App() {
       <aside className="conversation-list">
         <header className="list-header">
           <button className="profile-pill" onClick={() => setSettingsOpen(true)} type="button">
-            <span className="avatar small" style={{ background: user.avatar_color || AVATAR_COLORS[0] }}>{initials(displayName(user))}</span>
+            <span className="avatar small" style={profilePicture ? { backgroundImage: `url(${profilePicture})`, backgroundSize: "cover", backgroundPosition: "center" } : { background: user.avatar_color || AVATAR_COLORS[0] }}>{profilePicture ? "" : initials(displayName(user))}</span>
             <span>
               <span className="eyebrow">Privát Chat</span>
               <strong>{displayName(user)}</strong>
@@ -687,10 +687,10 @@ export default function App() {
       <section
         className="chat-screen"
         style={chatBackground ? {
-          backgroundImage: `url(${chatBackground}), linear-gradient(180deg, rgba(15, 18, 32, 0.98), #11141b 42%)`,
-          backgroundSize: "cover, auto",
-          backgroundPosition: "center, top",
-          backgroundRepeat: "no-repeat, no-repeat"
+          backgroundImage: `linear-gradient(180deg, rgba(15, 18, 32, 0.92), rgba(17, 20, 27, 0.92)), url(${chatBackground})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundRepeat: "no-repeat"
         } : undefined}
       >
         {!selectedUser ? (
