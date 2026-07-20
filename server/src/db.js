@@ -322,9 +322,31 @@ export async function getAdminUsers() {
 }
 
 export async function deleteUserById(userId) {
-  await db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?").run(userId);
-  await db.prepare("DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?").run(userId, userId);
-  await db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  if (db.kind === "postgres") {
+    // Use explicit transaction for Postgres
+    await db.exec("BEGIN");
+    try {
+      await db.prepare("UPDATE invite_codes SET used_by = NULL WHERE used_by = ?").run(userId);
+      await db.prepare("UPDATE invite_codes SET created_by = NULL WHERE created_by = ?").run(userId);
+      await db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?").run(userId);
+      await db.prepare("DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?").run(userId, userId);
+      await db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+      await db.exec("COMMIT");
+    } catch (err) {
+      await db.exec("ROLLBACK");
+      throw err;
+    }
+  } else {
+    const transaction = db.transaction(() => {
+      db.prepare("UPDATE invite_codes SET used_by = NULL WHERE used_by = ?").run(userId);
+      db.prepare("UPDATE invite_codes SET created_by = NULL WHERE created_by = ?").run(userId);
+      db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?").run(userId);
+      db.prepare("DELETE FROM messages WHERE sender_id = ? OR receiver_id = ?").run(userId, userId);
+      db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+    });
+
+    transaction();
+  }
 }
 
 export async function saveEmailVerificationCode(email, codeHash, expiresAt) {
